@@ -28,7 +28,7 @@ Caption generation sees three sampled frames, not the whole video/audio. It can 
 
 The low-watermark is a count of pending, usable regular posts. Conservation selects alternate calendar days when stock is at or below the threshold, or when pending stock cannot cover a supplied drought date at daily cadence. Trials also slow to one per alternate calendar day. A shortage notice is created if this still cannot cover the period. Posted clips are never silently reused. New clips enter the shuffled flexible queue; a SHA-256 uniqueness constraint stops renamed or repeated source files from producing duplicate lane jobs.
 
-Default lane gap is seven days between the same footage appearing as a regular and Trial Reel. The planner assigns regular slots first, then Trial slots respecting that gap; a Trial need not precede its regular Reel. If you want initial Trials sooner, reduce the gap or pin selected slots. Automatic promotion/graduation is not implemented. Each lane publishes its own Reel.
+Default lane gap is one day between the same footage appearing as a regular and Trial Reel. The planner assigns regular slots first, then Trial slots respecting that gap; a Trial need not precede its regular Reel. If you want initial Trials sooner, reduce the gap or pin selected slots. Automatic promotion/graduation is not implemented. Each lane publishes its own Reel.
 
 ## Security and scope
 

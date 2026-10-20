@@ -112,3 +112,5 @@ document.addEventListener('click',async e=>{
 });
 async function start(){try{await loadState();$('#login').hidden=true;$('#shell').hidden=false;await render();}catch(e){if(!state)showLogin();else toast(e.message,true);}}
 icons();start();setInterval(()=>{if(state&&!$('#editor').open&&['queue','library','activity'].includes(currentPage))refresh().catch(e=>toast(e.message,true));},30000);
+
+window.addEventListener('unhandledrejection',event=>{event.preventDefault();toast(event.reason?.message||'The request could not finish. Check the connection and try again.',true);});
