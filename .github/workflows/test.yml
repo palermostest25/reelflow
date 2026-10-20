@@ -17,6 +17,35 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - run: node --check app/static/app.js
-      - run: docker build -t reelflow:ci .
-      - run: cp .env.example .env && docker compose config --quiet
-      - run: docker run --rm --entrypoint python -e APP_SECRET=ci-only-secret-with-at-least-32-characters -e TOKEN_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= -e ADMIN_PASSWORD=ci-only-password-12345 reelflow:ci -c "from app.db import init; init()"
+      - run: docker build -t reelflow:local .
+      - run: docker compose --profile https config --quiet
+      - name: Fresh single-file Compose startup and restart
+        run: |
+          docker compose up -d --no-build --wait --wait-timeout 120
+          docker compose exec -T web python -c "from app import config as c; c.validate_runtime(); from zoneinfo import ZoneInfo; ZoneInfo('Australia/Perth'); from pathlib import Path; assert Path('/data/.runtime.json').is_file()"
+          docker compose exec -T web python scripts/check_installation.py > /tmp/reelflow-first.txt
+          docker compose restart web worker
+          docker compose up -d --no-build --wait --wait-timeout 120
+          docker compose exec -T web python scripts/check_installation.py > /tmp/reelflow-second.txt
+          cmp /tmp/reelflow-first.txt /tmp/reelflow-second.txt
+      - name: Included Docker gateway forwards to the Instagram app
+        run: |
+          docker compose run --rm --no-deps https sh -ec '
+            caddy reverse-proxy --from http://localhost:8090 --to web:8080 >/tmp/gateway-test.log 2>&1 &
+            proxy_pid=$!
+            trap "kill $proxy_pid 2>/dev/null || true" EXIT
+            for attempt in $(seq 1 20); do
+              if wget -qO- http://localhost:8090/healthz | grep -q '"'"'"status":"ok"'"'"'; then
+                exit 0
+              fi
+              sleep 1
+            done
+            cat /tmp/gateway-test.log
+            exit 1
+          '
+      - name: Container diagnostics
+        if: failure()
+        run: docker compose logs --no-color | sed -E 's/(admin password:).*/\1 [redacted]/'
+      - name: Stop test containers
+        if: always()
+        run: docker compose down -v

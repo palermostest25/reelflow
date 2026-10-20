@@ -32,9 +32,9 @@ Default lane gap is one day between the same footage appearing as a regular and 
 
 ## Security and scope
 
-Single admin, one Instagram account per data directory. Admin sessions expire after twelve hours, use HTTP-only signed cookies, and require CSRF tokens for mutations. HTTPS origins use Secure cookies. Login has an address-based attempt limit. Tokens and OAuth PKCE verifiers are Fernet-encrypted in SQLite; keep `TOKEN_KEY` and backups private. No Instagram password is stored. The browser never receives saved provider keys.
+Single admin, one Instagram account per data directory. Admin sessions expire after twelve hours, use HTTP-only signed cookies, and require CSRF tokens for mutations. HTTPS origins use Secure cookies. Login has an address-based attempt limit. Tokens and OAuth PKCE verifiers are Fernet-encrypted in SQLite; the installation encryption key persists in `/data/.runtime.json`; keep the data volume (including `.runtime.json`) and backups private. No Instagram password is stored. The browser never receives saved provider keys.
 
-The default port binds only to `127.0.0.1`. A public deployment needs a trusted reverse proxy and TLS. Protect `.env` and application-state ownership, do not enable `DEMO_MODE` publicly, and do not expose the Python server without the intended proxy. Demo mode is only a loopback development preview and blocks provider credentials and live publishing.
+The web port is published on the Docker host for LAN access. Use the included HTTPS profile or a trusted existing proxy for a public deployment. Protect your locally configured `compose.yaml`, Docker logs, and application-state ownership, do not enable `DEMO_MODE` publicly, and do not expose the Python server without the intended proxy. Demo mode is only a loopback development preview and blocks provider credentials and live publishing.
 
 The media endpoint uses HMAC-SHA256 with a clip ID and 48-hour expiry. A valid URL grants temporary access to that specific video; anyone possessing it can retrieve it until expiry. Preview images, queue data, and library videos require admin authentication.
 
@@ -43,3 +43,9 @@ SQLite is appropriate for this single-account, one-host scheduler. This release 
 ## Integration acceptance record
 
 Before declaring your installation production-ready, record the real outcome of: Instagram authorization and token refresh; recent-caption import; your account's insight permissions; a public signed video URL fetched outside your LAN; one published regular Reel; one eligible Trial Reel; a delivered ntfy alert; source-folder permissions; and backup restoration. Automated tests cannot prove these account/network-specific conditions.
+
+## Installation credentials
+
+On a fresh data volume, both containers initialize the same session key, Fernet key and optional admin password under a filesystem lock. Writes are atomic and the internal credentials file is mode 0600. There are no user-managed environment files. The web container prints a generated admin password at startup; set `ADMIN_PASSWORD` in compose.yaml to choose your own and suppress that message. Restrict Docker log access accordingly.
+
+Keep `.runtime.json` with your database backups. Deleting it is not a password-reset procedure: it contains the encryption key for the saved Instagram/AI connections. Existing databases with encrypted tokens refuse to generate a replacement encryption key without the original key. This protects old installations during migration.

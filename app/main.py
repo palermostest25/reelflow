@@ -23,6 +23,8 @@ from .security import verify_media
 from . import instagram as ig, ai, notifications as ntfy
 from .worker import tick, finish
 
+# Set the shared installation key before constructing session middleware.
+c.bootstrap_runtime()
 STATIC = Path(__file__).parent/'static'
 
 @asynccontextmanager
@@ -409,7 +411,7 @@ def public_media(clip_id: str, expires: int, signature: str):
 @app.get('/auth/instagram/start')
 def instagram_start(request: Request):
     if c.DEMO or not c.META_ID or not c.META_SECRET:
-        raise HTTPException(409,'Configure Meta app credentials in .env, then restart. See the setup guide.')
+        raise HTTPException(409,'Set Meta app credentials in compose.yaml, then recreate the containers. See the setup guide.')
     state = secrets.token_urlsafe(32)
     request.session['ig_state'] = state
     request.session['ig_state_at'] = time.time()

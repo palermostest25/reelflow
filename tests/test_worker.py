@@ -128,3 +128,29 @@ def test_tick_publishes_a_due_job_instead_of_rescheduling(job,monkeypatch):
     monkeypatch.setattr(worker.ai,'caption_pending',lambda:None)
     worker.tick()
     assert row(job)['status']=='published' and len(calls)==1
+
+def test_publisher_uses_official_instagram_http_endpoints(monkeypatch):
+    import httpx
+    import json
+    from app import config as c
+    from app.db import secret
+    secret('instagram_token','test-only-instagram-access-token')
+    seen=[]
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith('/media_publish'):
+            return httpx.Response(200,json={'id':'media-123'})
+        if request.url.path.endswith('/media'):
+            return httpx.Response(200,json={'id':'container-123'})
+        return httpx.Response(200,json={'status_code':'FINISHED'})
+    original_client=httpx.Client
+    monkeypatch.setattr(ig.httpx,'Client',lambda **kwargs:original_client(transport=httpx.MockTransport(handler),**kwargs))
+    cid=ig.create_container('ig-account',{'caption':'Real footage caption','lane':'main'},'https://reels.example/media/signed')
+    assert ig.container_status(cid)=='FINISHED'
+    assert ig.publish('ig-account',cid)=='media-123'
+    assert [r.method for r in seen]==['POST','GET','POST']
+    assert [r.url.path for r in seen]==['/'+c.API_VERSION+'/ig-account/media','/'+c.API_VERSION+'/container-123','/'+c.API_VERSION+'/ig-account/media_publish']
+    assert all(r.url.host=='graph.instagram.com' for r in seen)
+    assert json.loads(seen[0].content)['video_url']=='https://reels.example/media/signed'
+    assert json.loads(seen[2].content)=={'creation_id':'container-123'}
+    assert all(r.headers['Authorization'].startswith('Bearer ') for r in seen)

@@ -9,4 +9,4 @@ COPY scripts ./scripts
 RUN mkdir -p /data /footage && chown app:app /data /footage
 USER app
 EXPOSE 8080
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--no-proxy-headers"]
+CMD ["python", "-m", "app.launch"]

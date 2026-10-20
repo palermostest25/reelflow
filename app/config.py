@@ -27,10 +27,16 @@ DEFAULTS = {
     'schedule_hours': [18, 18, 18, 18, 18, 18, 18],
 }
 
+def bootstrap_runtime():
+    global SECRET, TOKEN_KEY, PASSWORD
+    from .bootstrap import credentials
+    values = credentials(DATA, DB)
+    SECRET = values['APP_SECRET']
+    TOKEN_KEY = values['TOKEN_KEY']
+    PASSWORD = values['ADMIN_PASSWORD']
+
+
 def validate_runtime():
-    if len(SECRET) < 32 or not TOKEN_KEY or (not DEMO and len(PASSWORD) < 12):
-        raise RuntimeError('Run python scripts/configure.py first. APP_SECRET, TOKEN_KEY and a 12+ character ADMIN_PASSWORD are required.')
-    from cryptography.fernet import Fernet
-    Fernet(TOKEN_KEY.encode())
+    bootstrap_runtime()
     for folder in (DATA, DATA / 'media', DATA / 'thumbs', DATA / 'frames', DATA / 'uploads', FOOTAGE):
         folder.mkdir(parents=True, exist_ok=True)
