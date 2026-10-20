@@ -29,3 +29,20 @@ def test_missing_ai_key_never_creates_placeholder():
     with connect() as db:r=db.execute('SELECT * FROM clips WHERE id=?',(cid,)).fetchone()
     assert r['status']=='needs_caption'
     assert r['error'].startswith('Connect an AI provider')
+
+def test_first_login_adapts_default_brand_for_another_account(monkeypatch):
+    from app import instagram as ig
+    from app.db import settings
+    class Response:
+        status_code=200
+        def json(self):return {'access_token':'test-only-token','user_id':'87654321','expires_in':5184000}
+    class Client:
+        def __init__(self,**kw):pass
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def post(self,*a,**kw):return Response()
+        def get(self,*a,**kw):return Response()
+    monkeypatch.setattr(ig.httpx,'Client',Client)
+    monkeypatch.setattr(ig,'request',lambda *a,**kw:{'user_id':'87654321','username':'another_creator'})
+    ig.connect_account('test-only-code')
+    assert settings()['brand_name']=='another_creator'

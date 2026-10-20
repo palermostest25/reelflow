@@ -114,3 +114,9 @@ async function start(){try{await loadState();$('#login').hidden=true;$('#shell')
 icons();start();setInterval(()=>{if(state&&!$('#editor').open&&['queue','library','activity'].includes(currentPage))refresh().catch(e=>toast(e.message,true));},30000);
 
 window.addEventListener('unhandledrejection',event=>{event.preventDefault();toast(event.reason?.message||'The request could not finish. Check the connection and try again.',true);});
+
+document.addEventListener('click',e=>{
+ const link=e.target.closest('a[href^="/auth/"]');if(!link||!state)return;
+ if(state.demo){e.preventDefault();toast('Connect accounts in the Docker deployment. This local preview does not store credentials.',true);}
+ else if(link.getAttribute('href').includes('instagram')&&!state.meta_configured){e.preventDefault();toast('Set the Meta app ID, app secret and public HTTPS URL in .env, then restart Docker. See the deployment guide.',true);}
+});

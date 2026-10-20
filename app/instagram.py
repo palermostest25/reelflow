@@ -3,7 +3,7 @@ import time
 from datetime import datetime
 import httpx
 from . import config as c
-from .db import connect, secret, event, runtime
+from .db import connect, secret, event, runtime, settings
 
 class MetaError(Exception):
     def __init__(self, message, code=0, transient=False):
@@ -47,6 +47,10 @@ def connect_account(code):
     with connect(True) as db:
         db.execute('INSERT OR REPLACE INTO account(id,ig_id,username,expires_at) VALUES(1,?,?,?)',
                    (ig_id,profile['username'],time.time()+long.get('expires_in',5184000)))
+        current = settings(db)
+        if not old and current['brand_name']==c.DEFAULTS['brand_name'] and 'trades' not in profile['username'].lower():
+            current['brand_name'] = profile['username']
+            db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(current),))
     event('Connected Instagram @'+profile['username']+'. Previous captions will import on the next worker pass.')
 
 def refresh_token():
