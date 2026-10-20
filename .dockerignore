@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+data
+footage
+.venv
+__pycache__
+.pytest_cache
+.impeccable
+tests
+docs

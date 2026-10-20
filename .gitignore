@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+data/
+footage/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.impeccable/
+.DS_Store

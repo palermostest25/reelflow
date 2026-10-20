@@ -1,0 +1,22 @@
+name: Check Reelflow
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: node --check app/static/app.js
+      - run: docker build -t reelflow:ci .
+      - run: cp .env.example .env && docker compose config --quiet
+      - run: docker run --rm --entrypoint python -e APP_SECRET=ci-only-secret-with-at-least-32-characters -e TOKEN_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= -e ADMIN_PASSWORD=ci-only-password-12345 reelflow:ci -c "from app.db import init; init()"
