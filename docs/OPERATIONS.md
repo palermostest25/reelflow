@@ -12,7 +12,7 @@ Regular jobs have a 20-hour minimum publish spacing in addition to calendar-day 
 
 ## Observability
 
-`/healthz` reports web/database readiness and recent worker heartbeat. Docker has separate web and worker healthchecks. The heartbeat is updated at worker-pass boundaries; long conversion batches may make the UI report the worker as offline temporarily. The container healthcheck allows up to 35 minutes for a conversion pass; inspect logs if preparation is stuck. Docker does not automatically restart a merely unhealthy container; arrange external monitoring if required by your hosting environment.
+`/healthz` reports web/database readiness and recent worker heartbeat. Compose has no healthcheck. The supervisor exits if the UI or worker process stops, so Docker's restart policy restarts the whole app. A hung process requires operator attention; process supervision does not detect every stall. The heartbeat is updated at worker-pass boundaries, so a long conversion batch can temporarily appear offline in the UI. Inspect Activity and container logs if preparation is stuck.
 
 Activity is the durable application log. Container logs intentionally avoid provider response bodies, query strings, access tokens and signed footage URLs. Publish and ntfy failures are visible. Notification records remain pending on delivery failures and retry at five-minute intervals, bounded per pass. Low-footage alerts deduplicate by UTC day. Subscribe to the selected ntfy topic on your phone.
 
@@ -34,7 +34,7 @@ Default lane gap is one day between the same footage appearing as a regular and 
 
 Single admin, one Instagram account per data directory. Admin sessions expire after twelve hours, use HTTP-only signed cookies, and require CSRF tokens for mutations. HTTPS origins use Secure cookies. Login has an address-based attempt limit. Tokens and OAuth PKCE verifiers are Fernet-encrypted in SQLite; the installation encryption key persists in `/data/.runtime.json`; keep the data volume (including `.runtime.json`) and backups private. No Instagram password is stored. The browser never receives saved provider keys.
 
-The web port is published on the Docker host for LAN access. Use the included HTTPS profile or a trusted existing proxy for a public deployment. Protect your locally configured `compose.yaml`, Docker logs, and application-state ownership, do not enable `DEMO_MODE` publicly, and do not expose the Python server without the intended proxy. Demo mode is only a loopback development preview and blocks provider credentials and live publishing.
+The web port is published on the Docker host for LAN access. Use your Cloudflare Tunnel or an existing HTTPS proxy for public access, and set `PUBLIC_URL` to its HTTPS origin. Protect your locally configured `compose.yaml`, Docker logs, and application-state ownership, do not enable `DEMO_MODE` publicly, and do not expose the Python server without the intended proxy. Demo mode is only a loopback development preview and blocks provider credentials and live publishing.
 
 The media endpoint uses HMAC-SHA256 with a clip ID and 48-hour expiry. A valid URL grants temporary access to that specific video; anyone possessing it can retrieve it until expiry. Preview images, queue data, and library videos require admin authentication.
 
@@ -46,6 +46,6 @@ Before declaring your installation production-ready, record the real outcome of:
 
 ## Installation credentials
 
-On a fresh data volume, both containers initialize the same session key, Fernet key and optional admin password under a filesystem lock. Writes are atomic and the internal credentials file is mode 0600. There are no user-managed environment files. The web container prints a generated admin password at startup; set `ADMIN_PASSWORD` in compose.yaml to choose your own and suppress that message. Restrict Docker log access accordingly.
+On a fresh data volume, the app initializes the shared session key, Fernet key and optional admin password under a filesystem lock. Writes are atomic and the internal credentials file is mode 0600. There are no user-managed environment files. The container prints a generated admin password at startup; set `ADMIN_PASSWORD` in compose.yaml to choose your own and suppress that message. Restrict Docker log access accordingly.
 
 Keep `.runtime.json` with your database backups. Deleting it is not a password-reset procedure: it contains the encryption key for the saved Instagram/AI connections. Existing databases with encrypted tokens refuse to generate a replacement encryption key without the original key. This protects old installations during migration.

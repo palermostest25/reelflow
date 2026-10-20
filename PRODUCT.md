@@ -22,3 +22,6 @@ The user explicitly requested publishing the finished source to GitHub. The repo
 
 ## Deployment commitment
 One compose.yaml configures and runs the whole app in Docker. No host Python setup or separate environment files. Installation keys and the optional generated admin password persist internally in the application data volume. Publishing uses the official Instagram API.
+
+## Container delivery
+GitHub Actions builds and publishes ghcr.io/palermostest25/reelflow. Compose pulls that prebuilt image and runs one container with the UI and worker supervised together. No build directive, x-common, Compose healthchecks, Caddy, or TLS ports. The operator manages a Cloudflare Tunnel; PUBLIC_URL is its HTTPS origin, forwarded to the app over HTTP on port 8080.

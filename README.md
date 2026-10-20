@@ -17,31 +17,34 @@ Built for TRADES, the DJ duo; configurable for any artist, creator, or business.
 - Sends ntfy stock, shortage, connection and publishing alerts with delivery retries. Enter a "no new footage until" date in Settings. If alternate-day pacing cannot cover it, Reelflow tells you; it does not invent footage or recycle clips secretly.
 - Persists containers before publishing. A timeout or crash at the publish boundary produces a reconciliation hold; it does **not** trigger an automatic duplicate post.
 
-## Run it: one Compose file, all Docker
+## Run it: one container, one Compose file
+
+Save [compose.yaml](https://github.com/palermostest25/reelflow/blob/main/compose.yaml) into a folder. Edit `PUBLIC_URL`, `META_APP_ID`, `META_APP_SECRET`, and the footage mount's host path, then run:
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 ```
 
-Save [compose.yaml](https://github.com/palermostest25/reelflow/blob/main/compose.yaml) into a folder first. It is standalone: Docker fetches the application source from GitHub during the build; no local checkout or host Git is needed.
+Docker pulls the prebuilt `ghcr.io/palermostest25/reelflow:latest` image. GitHub Actions builds and tests native AMD64 and ARM64 images before publishing; your server needs no application source, build tools, environment files or external cron.
 
-Open [the local desk](http://localhost:8080), or port 8080 on your Docker host. Get the generated admin password with `docker compose logs web`. You can instead set your own `ADMIN_PASSWORD` in **compose.yaml** before starting.
+Open [the local desk](http://localhost:8080), or port 8080 on your Docker host. Get the generated admin password with `docker compose logs reelflow`. Installation keys and your password persist alongside the database and media in the Docker volume. Optionally add `ADMIN_PASSWORD` to the same Compose environment mapping to choose your own password.
 
-**compose.yaml is the only deployment configuration.** No host Python installation, setup script, environment files, or external cron service is required. It starts the web UI and posting worker together. Installation keys are created automatically and persist with your database and media in a Docker volume.
+The one container runs the web UI and posting worker together. A supervisor stops the container if either process exits; Docker restarts it. Compose exposes only port 8080 and contains no gateway, shared YAML blocks or healthchecks.
 
-For your actual account, edit the marked entries in that file: `PUBLIC_URL`, `META_APP_ID`, `META_APP_SECRET`, and the footage mount's host path. Connect OpenRouter and ntfy through the UI. The app starts paused in dry run; live publishing uses the **official Instagram API**, creating a Reel container with `POST /{ig_id}/media`, letting Instagram fetch the signed video URL, then publishing with `POST /{ig_id}/media_publish`.
+**Cloudflare Tunnel:** point your tunnel at `http://DOCKER-HOST:8080` and set `PUBLIC_URL` to its public `https://reels.example.com` address. The container uses HTTP; Cloudflare provides public HTTPS for Instagram login callbacks and signed video downloads. If the tunnel runs in another container, use a reachable host address or shared Docker network rather than that container's `localhost`. Allow Instagram to fetch signed `/media/*` URLs without an interactive Cloudflare Access challenge. The dashboard has its own login.
 
-An optional HTTPS gateway is also included in the same file. Set `PUBLIC_URL` to your real HTTPS domain, configure DNS and ports 80/443, then run:
+Connect OpenRouter and ntfy through the UI. The app starts paused in dry run; live publishing uses the **official Instagram API**, creating a Reel container with `POST /{ig_id}/media`, letting Instagram fetch the signed video URL, then publishing with `POST /{ig_id}/media_publish`. A Meta app and eligible professional account are required. See [deployment](docs/DEPLOYMENT.md) for account setup, TrueNAS permissions, updates and backups.
+
+To update:
 
 ```sh
-docker compose --profile https up -d --build
+docker compose pull
+docker compose up -d
 ```
-
-No Caddyfile or second Compose file is needed. Skip that profile when using an existing reverse proxy. A first-time Meta app setup and eligible professional account are still required by Instagram. See [deployment](docs/DEPLOYMENT.md) for those account steps and TrueNAS storage.
 
 ## What is verified
 
-The automated suite exercises the real application and real FFmpeg conversion. It covers authentication/CSRF, encrypted credentials, signed media and Range requests, queue cadence and mixing, rejection persistence, conservation, account expiry, distinct Trial payloads, publishing holds, and saved-container recovery. GitHub Actions also builds the Docker image.
+The automated suite exercises the real application and real FFmpeg conversion. It covers authentication/CSRF, encrypted credentials, signed media and Range requests, queue cadence and mixing, rejection persistence, conservation, account expiry, distinct Trial payloads, publishing holds, and saved-container recovery. GitHub Actions also builds and starts the Docker image on AMD64 and ARM64, checks login and persistent credentials after a restart, and verifies that a crashed worker triggers a container restart before publishing to GHCR.
 
 **Live integration is not verified until you connect your Meta app and Instagram account.** Trial availability depends on the account and API permissions. Meta's developer pages were not fully accessible during implementation; the connector uses the documented Graph container/publish flow and a separately tested Trial parameter contract. Validate one regular Reel and one eligible Trial on your account before unattended use. No footage or account credentials are bundled.
 
@@ -51,7 +54,7 @@ This is a single-account, single-admin deployment. Use a separate data directory
 
 The implemented sign-in is [OpenRouter's official OAuth PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth). The resulting user-controlled API key is encrypted at rest; inference uses the user's OpenRouter credit. Choose a model with image inputs for visual captions. Exact model IDs are loaded from the provider, rather than assuming an unverified model name.
 
-You can instead set `AI_BASE_URL` and supply a key for an OpenAI-compatible Chat Completions provider. Changing the provider requires restarting the containers. Provider-specific request differences may require an adapter; this connector expects the standard `messages`/`choices` format.
+You can instead set `AI_BASE_URL` and supply a key for an OpenAI-compatible Chat Completions provider. Changing the provider requires restarting the container. Provider-specific request differences may require an adapter; this connector expects the standard `messages`/`choices` format.
 
 OpenAI now documents [Sign in with ChatGPT plan usage](https://developers.openai.com/siwc/token-sharing-open-source). Its current registration flow uses a `127.0.0.1` loopback listener and its inference flow uses streamed Responses with explicit preview limitations. That separate host-login adapter is **not implemented here**. Reelflow does not reuse Codex or Claude Code session credentials. OpenRouter sign-in/API credentials are the supported unattended path.
 
@@ -66,10 +69,10 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-Install FFmpeg and FFprobe on the host for local development. Docker includes them. The web server never starts an implicit scheduler; run the worker or cron explicitly. Run only one deployment per local data directory; a process lock prevents overlapping worker/cron passes.
+Install FFmpeg and FFprobe on the host for local development. Docker includes them. For source development, run the web and worker commands in separate terminals; the Docker launcher starts both automatically. Run only one deployment per local data directory; a process lock prevents overlapping worker/cron passes.
 
 ## Architecture
 
-FastAPI serves the interface and authenticated API. Session keys, encryption keys and a generated admin password are initialized under a process lock in the persistent data volume, so both containers and later restarts share the same installation. A separate Python worker handles media, captions, planning, account sync, publishing and notices. SQLite WAL stores application records; processed footage and thumbnails live beside it. Tokens are encrypted with Fernet using a separately retained key. Signed 48-hour, clip-specific media URLs allow Instagram to fetch only the intended MP4, including byte ranges, without exposing the dashboard or library.
+FastAPI serves the interface and authenticated API. Session keys, encryption keys and a generated admin password are initialized under a process lock in the persistent data volume, so both processes and later restarts share the same installation. The supervised Python worker handles media, captions, planning, account sync, publishing and notices. SQLite WAL stores application records; processed footage and thumbnails live beside it. Tokens are encrypted with Fernet using a separately retained key. Signed 48-hour, clip-specific media URLs allow Instagram to fetch only the intended MP4, including byte ranges, without exposing the dashboard or library.
 
 See [operations and integration details](docs/OPERATIONS.md) for failure states, data retention and practical limits.

@@ -1,4 +1,4 @@
-"""Consistent SQLite snapshot. Run inside web container; back up /data/media separately."""
+"""Consistent SQLite snapshot. Run inside the reelflow container; back up /data/media separately."""
 import datetime
 import os
 from pathlib import Path

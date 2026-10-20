@@ -1,105 +1,18 @@
-# Reelflow: all deployment settings live in this file. No .env file required.
-# Save this file on its own, then run: docker compose up -d --build
 name: reelflow
-
-x-common: &common
-  # Docker fetches the public source itself; no checkout or host Git is needed.
-  build:
-    context: https://github.com/palermostest25/reelflow.git#main
-  image: reelflow:local
-  user: "1000:1000"
-  environment:
-    # EDIT: your public HTTPS origin for Instagram login and video fetching.
-    # The localhost default lets you explore the UI in dry run first.
-    PUBLIC_URL: &public-url "http://localhost:8080"
-    # EDIT: credentials from your Meta app's Instagram Login product.
-    META_APP_ID: ""
-    META_APP_SECRET: ""
-    META_API_VERSION: "v25.0"
-    # Optional: blank generates a persistent password, shown in `docker compose logs web`.
-    ADMIN_PASSWORD: ""
-    # Connect OpenRouter in the UI, or optionally supply a compatible provider here.
-    AI_BASE_URL: "https://openrouter.ai/api/v1"
-    AI_API_KEY: ""
-    AI_MODEL: ""
-    DATA_DIR: /data
-    FOOTAGE_DIR: /footage
-    DEMO_MODE: "false"
-    # Internal session/encryption keys are generated automatically in /data.
-  volumes:
-    - reelflow-data:/data
-    # EDIT the left side to your TrueNAS footage path, e.g. /mnt/pool/trades.
-    - ./footage:/footage:ro
-  restart: unless-stopped
-  init: true
-  security_opt:
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  read_only: true
-  tmpfs:
-    - /tmp:size=512m,mode=1777
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "3"
-
 services:
-  web:
-    <<: *common
-    ports:
-      # Use the Docker host's address to open the UI from your LAN.
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-
-  worker:
-    <<: *common
-    command: ["python", "-m", "app.worker"]
-    depends_on:
-      web:
-        condition: service_healthy
-    stop_grace_period: 2m
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os,sqlite3,time; db=sqlite3.connect(os.environ['DATA_DIR']+'/reelflow.sqlite3'); row=db.execute(\"SELECT value FROM runtime WHERE key='heartbeat'\").fetchone(); assert row and time.time()-float(row[0])<2100"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 90s
-
-  # Optional HTTPS, also entirely in Docker and this same Compose file.
-  # Set PUBLIC_URL above to https://your-domain, point its DNS at this host,
-  # forward ports 80/443, then run: docker compose --profile https up -d --build
-  # Skip this service if you already have a reverse proxy.
-  https:
-    image: caddy:2-alpine
-    profiles: [https]
-    command: ["caddy", "reverse-proxy", "--from", *public-url, "--to", "web:8080"]
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      web:
-        condition: service_healthy
+  reelflow:
+    image: ghcr.io/palermostest25/reelflow:latest
     restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
+    init: true
+    stop_grace_period: 30s
+    ports:
+      - "8080:8080"
+    environment:
+      PUBLIC_URL: "http://localhost:8080" # Set to your Cloudflare Tunnel's https:// address.
+      META_APP_ID: ""
+      META_APP_SECRET: ""
+    volumes:
+      - reelflow-data:/data
+      - ./footage:/footage:ro # Replace ./footage with your TrueNAS folder.
 volumes:
   reelflow-data:
-  caddy-data:
-  caddy-config:
