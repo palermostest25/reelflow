@@ -78,6 +78,12 @@ def test_oauth_state_rejection(client,monkeypatch):
     monkeypatch.setattr(c,'META_SECRET','test-secret')
     r=client.get('/auth/instagram/start',follow_redirects=False)
     assert r.status_code==307 and 'state=' in r.headers['location']
+    from urllib.parse import urlparse,parse_qs
+    query=parse_qs(urlparse(r.headers['location']).query)
+    assert query['client_id']==['test-id']
+    assert query['redirect_uri']==[c.PUBLIC_URL+'/auth/instagram/callback']
+    assert query['force_reauth']==['true'] and query['enable_fb_login']==['false']
+    assert set(query['scope'][0].split(','))=={'instagram_business_basic','instagram_business_content_publish','instagram_business_manage_insights'}
     assert client.get('/auth/instagram/callback?state=forged&code=bad').status_code==403
 
 def test_xss_is_data_and_pagination_bounded(client):

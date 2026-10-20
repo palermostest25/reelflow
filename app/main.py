@@ -411,12 +411,12 @@ def public_media(clip_id: str, expires: int, signature: str):
 @app.get('/auth/instagram/start')
 def instagram_start(request: Request):
     if c.DEMO or not c.META_ID or not c.META_SECRET:
-        raise HTTPException(409,'Set Meta app credentials in compose.yaml, then recreate the containers. See the setup guide.')
+        raise HTTPException(409,'Set Meta app credentials in compose.yaml, then recreate the container. See the setup guide.')
     state = secrets.token_urlsafe(32)
     request.session['ig_state'] = state
     request.session['ig_state_at'] = time.time()
     scope = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights'
-    return RedirectResponse('https://www.instagram.com/oauth/authorize?'+urlencode({'client_id':c.META_ID,'redirect_uri':c.PUBLIC_URL+'/auth/instagram/callback','response_type':'code','scope':scope,'state':state,'enable_fb_login':'0','force_authentication':'1'}))
+    return RedirectResponse('https://www.instagram.com/oauth/authorize?'+urlencode({'client_id':c.META_ID,'redirect_uri':c.PUBLIC_URL+'/auth/instagram/callback','response_type':'code','scope':scope,'state':state,'enable_fb_login':'false','force_reauth':'true'}))
 
 @app.get('/auth/instagram/callback')
 def instagram_callback(request: Request, code: str='', state: str=''):

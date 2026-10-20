@@ -21,8 +21,8 @@ Alternatively put a password of at least twelve characters in `ADMIN_PASSWORD` i
 | Setting | What goes here |
 | --- | --- |
 | `PUBLIC_URL` | Your reachable HTTPS origin, e.g. `https://reels.example.com`; no path or trailing slash. The localhost default is for exploring dry run. |
-| `META_APP_ID` | The app ID for your Meta app's Instagram Login product. |
-| `META_APP_SECRET` | The corresponding app secret. Keep your edited Compose file private. |
+| `META_APP_ID` | The **Instagram App ID** from your app's Instagram Login setup. |
+| `META_APP_SECRET` | The matching **Instagram App Secret**. Keep your edited Compose file private. |
 | Footage volume | Change `./footage:/footage:ro` to your source, e.g. `/mnt/pool/media/trades:/footage:ro`. |
 | `ADMIN_PASSWORD` | Optional; blank generates one automatically. |
 
@@ -40,15 +40,9 @@ Publishing is implemented in `app/instagram.py`; it uses Instagram Login OAuth a
 
 Regular Reels use `share_to_feed=true`. Trials use `trial_params={"graduation_strategy":"MANUAL"}` and `share_to_feed=false`. Trial eligibility is account-dependent; a rejected Trial is held rather than silently converted to a regular Reel.
 
-Meta setup:
+For the full click-by-click account setup, follow [First-time setup: Meta and Instagram in the README](../README.md#first-time-setup-meta-and-instagram). In particular, `META_APP_ID` and `META_APP_SECRET` must contain the **Instagram App ID and Instagram App Secret** from **Instagram → API setup with Instagram login → Business login settings**. A managed own-account installation uses Standard Access; the README separates that route from Advanced Access for other businesses.
 
-1. Create a Meta app with Instagram API and Instagram Login. Use an Instagram Business or Creator account.
-2. Register `https://YOUR-ORIGIN/auth/instagram/callback` as the exact OAuth redirect.
-3. Enable `instagram_business_basic`, `instagram_business_content_publish`, and `instagram_business_manage_insights`, with the applicable app roles/access/review in Meta's dashboard.
-4. Put the app credentials and HTTPS origin in compose.yaml and recreate the container.
-5. In Settings, choose **Connect Instagram**, authorize, and return to the desk. The worker imports recent captions and available performance.
-
-Permissions/review requirements can change; confirm them against your Meta app dashboard. The connector targets Graph API v25.0. References: [Meta's official collection](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api), [publishing](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/content-publishing/), [insights](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/insights/).
+The connector targets Graph API v25.0. Meta references: [app creation](https://developers.facebook.com/documentation/instagram-platform/create-an-instagram-app), [business login](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/business-login), [publishing](https://developers.facebook.com/documentation/instagram-platform/content-publishing), [insights](https://developers.facebook.com/documentation/instagram-platform/insights).
 
 ## Cloudflare Tunnel and HTTPS
 
@@ -73,7 +67,7 @@ The named data volume is retained across updates. Take a backup first. To roll b
 
 ## TrueNAS footage and data
 
-The container runs as UID/GID 1000. Grant that identity read/traverse access to the watched footage dataset, or add a `user: "UID:GID"` setting to the service to an identity with suitable dataset permissions. If changing the UID/GID on an existing installation, update the application volume's ownership first.
+The container runs as UID/GID 1000. Grant that identity read/traverse access to the watched footage dataset, or add a `user: "UID:GID"` setting for an identity with suitable dataset permissions. If changing the UID/GID on an existing installation, update the application volume's ownership first.
 
 The footage mount is read-only; originals are never modified. Browser uploads, processed videos, thumbnails, the database and installation credentials live in `reelflow-data`, a named Docker volume managed automatically. To use a local TrueNAS application-state dataset instead, replace `reelflow-data:/data` with a host path and make it writable by the container identity. Keep `/data` on local storage, not an SMB/NFS share, because SQLite WAL needs reliable local locking. The footage source can be a mounted share.
 

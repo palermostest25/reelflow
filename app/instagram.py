@@ -32,6 +32,12 @@ def connect_account(code):
         if response.status_code != 200:
             raise MetaError('Instagram login exchange failed. Check the exact redirect URL and Meta app settings.')
         short = response.json()
+        # Current Meta docs wrap the token in data[]; accept earlier flat responses too.
+        if isinstance(short, dict) and 'data' in short:
+            records = short['data']
+            short = records[0] if isinstance(records, list) and len(records) == 1 else None
+        if not isinstance(short, dict) or not isinstance(short.get('access_token'), str) or not short['access_token'] or not short.get('user_id'):
+            raise MetaError('Instagram login returned an invalid token response. Reconnect from Settings.')
         response = client.get('https://graph.instagram.com/access_token',params={
             'grant_type':'ig_exchange_token','client_secret':c.META_SECRET,'access_token':short['access_token']})
         if response.status_code != 200:

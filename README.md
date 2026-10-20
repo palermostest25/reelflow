@@ -4,6 +4,8 @@
 
 Built for TRADES, the DJ duo; configurable for any artist, creator, or business. Reelflow imports the connected account's recent captions and available engagement rather than imposing a generic brand voice.
 
+Start with [Docker deployment](#run-it-one-container-one-compose-file), follow the [exact Meta setup](#first-time-setup-meta-and-instagram), then complete [live acceptance and operations](#finish-setup-and-verify-unattended-operation).
+
 ## What it does
 
 - Watches a read-only footage folder, including a TrueNAS dataset or mounted share. Also accepts browser uploads.
@@ -42,11 +44,154 @@ docker compose pull
 docker compose up -d
 ```
 
+## First-time setup: Meta and Instagram
+
+Follow these steps for TRADES or another professional account you own/manage. This uses **Instagram API with Instagram Login**. A linked Facebook Page is not required. For your own managed account added in the dashboard, **Standard Access does not require App Review**. Serving other businesses without app roles requires Advanced Access, App Review and Business Verification. Publishing the source on GitHub does not grant Meta permissions or make this a multi-account service. See Meta's [access overview](https://developers.facebook.com/documentation/instagram-platform/overview) and [review scenarios](https://developers.facebook.com/documentation/instagram-platform/app-review).
+
+### 1. Get your public address working
+
+Choose a hostname such as `reels.example.com`. Configure your own Cloudflare Tunnel to send it to `http://DOCKER-HOST:8080`. Use that hostname throughout the following steps, replacing the example everywhere.
+
+In your local `compose.yaml`, set:
+
+```yaml
+    environment:
+      PUBLIC_URL: "https://reels.example.com"
+      META_APP_ID: ""     # Instagram App ID, copied in step 4
+      META_APP_SECRET: "" # Instagram App Secret, copied in step 4
+```
+
+Keep `PUBLIC_URL` as an origin: no extra path or trailing slash. Open the app through this HTTPS address after configuring it; HTTPS settings produce Secure login cookies, so plain HTTP LAN access will no longer retain your login. The container itself still uses HTTP.
+
+### 2. Prepare the Instagram account and your Meta developer login
+
+- Confirm TRADES is a **public Business or Creator account**. If it is Personal, switch it to a professional account in Instagram's account settings.
+- Open the [Meta App Dashboard](https://developers.facebook.com/apps/), sign in with your Facebook developer account, and finish developer registration if prompted. The Facebook account owns the developer app; the later Instagram authorization uses TRADES' Instagram credentials.
+
+### 3. Create the developer app
+
+Meta's [current app creation guide](https://developers.facebook.com/documentation/instagram-platform/create-an-instagram-app) describes this route:
+
+1. Choose **Create App**. For business association, select your portfolio if you have one, or the option to connect one later if offered.
+2. Select the **Other** use case, then the **Business** app type.
+3. Name the app `Reelflow` and supply a contact email you monitor. Finish creation.
+4. On its dashboard, find **Instagram** under available products and choose **Set up**.
+5. Open **Instagram → API setup with Instagram login**. Stay on this login configuration for Reelflow.
+
+Dashboard layouts can vary by account. The destination to look for is **API setup with Instagram login**. Do not choose the Facebook Login setup or the retired Basic Display API.
+
+### 4. Configure business login and copy the right credentials
+
+On the Instagram setup page, find **Set up Instagram business login** and choose **Set up** / **Business login settings**.
+
+Save this exact OAuth redirect URI, replacing the hostname:
+
+```text
+https://reels.example.com/auth/instagram/callback
+```
+
+Check the saved address: the path, HTTPS scheme and trailing slash must match exactly. Reelflow's callback has **no trailing slash**.
+
+Copy the **Instagram App ID** and reveal/copy the **Instagram App Secret** from this Instagram setup/business-login section into `META_APP_ID` and `META_APP_SECRET` in your local Compose file. Despite those environment variable names, they need the **Instagram-specific credentials**, not the parent Meta/Facebook app credentials. Reelflow already implements the login button; you do not need to paste Meta's embed snippet into its source. [Official business-login instructions](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/business-login).
+
+Keep the configured Compose file private. The public repository contains blank placeholders only.
+
+### 5. Add TRADES and enable the permissions Reelflow uses
+
+In the Instagram setup page's account/token section, choose **Add account**, sign in to TRADES, and complete the requested account association. If Meta creates a pending Instagram tester invitation, accept it while signed in to TRADES under Instagram's **Apps and websites → Tester invites** settings. Accounts can also be managed under **App roles → Roles**; confirm the invitation is accepted before attempting Reelflow login. The account should appear as an added account, rather than a pending invite.
+
+Check these permissions in the Instagram setup / **App Review → Permissions and features** area:
+
+| Permission | Reelflow uses it for |
+| --- | --- |
+| `instagram_business_basic` | Account identity and recent media/caption import |
+| `instagram_business_content_publish` | Regular and Trial Reel publishing |
+| `instagram_business_manage_insights` | Available media engagement metrics |
+
+The publishing permissions are documented in [Content Publishing](https://developers.facebook.com/documentation/instagram-platform/content-publishing); the insights permission is documented in [Insights](https://developers.facebook.com/documentation/instagram-platform/insights). Reelflow requests all three when you connect. It does not need comment moderation, messaging or Human Agent permissions for its current features.
+
+For this own-account setup, retain Standard Access and the required account roles. You do not need to open the app to everyone to post to TRADES. Development/Standard Access does **not** make publishing a sandbox: authorized live requests can create real posts.
+
+Reelflow obtains and stores its token during login. There is no access-token field to fill in Compose and no need to copy a dashboard-generated token. It also does not use Instagram webhooks: leave webhook configuration out of this deployment, and do not enter the OAuth callback as a webhook URL.
+
+### 6. Restart and connect from Reelflow
+
+Save Compose, including the TrueNAS footage path, then run:
+
+```sh
+docker compose up -d
+docker compose logs reelflow
+```
+
+Use the generated password from the logs to sign in at your public HTTPS hostname. In **Settings**, choose **Connect Instagram**, sign in to TRADES, and approve all requested permissions. Complete the return in the same browser within ten minutes.
+
+Confirm Settings shows the correct Instagram username and that recent captions appear after the worker's next pass. Reelflow exchanges the login code for a long-lived token and attempts refresh when fewer than ten days remain. Meta permits refresh only for valid tokens older than 24 hours; expiration/revocation can require reconnecting. [Token lifecycle](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/business-login).
+
+### 7. If you later offer this to other businesses
+
+Follow Meta's [App Review guide](https://developers.facebook.com/documentation/instagram-platform/app-review), request Advanced Access only for the three permissions used, complete Business Verification, and supply the requested reviewer instructions, test access and recordings demonstrating each permission. Finish the dashboard's publishing requirements before admitting users outside the allowed roles.
+
+Provide genuine privacy and data-deletion information and any required deauthorization handling. This release does **not** include hosted privacy/deletion pages or Meta deauthorization/deletion webhook handlers. Never enter invented URLs, the home page, or the OAuth callback to bypass those fields. Those additional release requirements and a multi-account architecture need implementing before using this as a public service. Your self-hosted TRADES installation remains the own-account path above.
+
+### Meta connection troubleshooting
+
+| What you see | What to check |
+| --- | --- |
+| Invalid platform app / invalid client ID | Use the Instagram App ID and matching Instagram secret from the Instagram setup page. |
+| Redirect URI mismatch | Save exactly `PUBLIC_URL` + `/auth/instagram/callback`, including scheme and slash handling. Recreate the container after editing Compose. |
+| Insufficient developer role / app unavailable | Add the target account and accept its pending invitation. Standard Access is limited to the permitted accounts/roles. |
+| Invalid scope / missing permission | Confirm the Instagram Login product and the three permissions above. If a documented permission is unavailable for your app, record the exact error and stop setup for investigation; do not substitute a Facebook Login permission. |
+| Login state expired / repeated login screen | Start again from the app's HTTPS hostname in the same browser, allow cookies, and finish within ten minutes. |
+| Account connects but publishing fails | Check Activity, signed-video reachability, account restrictions and content eligibility. A connected account alone does not prove publishing works. |
+| Insights unavailable | Confirm the insights permission was granted; some metrics depend on account size/media eligibility. Unknown metrics remain unknown. |
+| Trial fails | Validate Trial eligibility on the account. Reelflow holds the failure and does not turn it into a regular Reel. |
+
+## Finish setup and verify unattended operation
+
+### AI, alerts, footage and schedule
+
+1. In Settings, connect OpenRouter, fund its credits and choose a model supporting image inputs. Alternatively enter a supported provider API key. Check generated captions against a few real clips; generation samples three silent frames and can miss audio/context.
+2. Enter your ntfy server, topic and optional access token. Send a test and confirm receipt on the phone subscribed to that topic. Use a private/authenticated topic for operational alerts.
+3. Mount the footage folder read-only. The container runs as UID/GID 1000: grant read/traverse access, and keep application storage writable. Keep `/data` on local storage; SQLite WAL should not live on SMB/NFS. Source footage can come from a mounted share.
+4. Set the audience timezone and weekday posting windows. Set the low-footage threshold and, when needed, **No new footage until**. Keep the default one regular per day and up to three Trials, with every clip used once in each lane. Timing improves only after sufficient measured history; it is not immediately a proven best time.
+5. Leave dry run enabled while checking imports, captions, framing, source audio, rejection and queue mixing. Enable **Require approval** for the pilot and inspect the approval state of existing jobs too.
+
+### Live acceptance: finish this before leaving it unattended
+
+- [ ] Public HTTPS hostname works and the correct account completes OAuth.
+- [ ] Historical captions import and permitted engagement metrics load.
+- [ ] A signed `/media/*` URL downloads from outside the LAN without an admin login or Cloudflare challenge. The dashboard/library remain protected.
+- [ ] A deliberately approved regular Reel publishes and appears correctly in Instagram.
+- [ ] A deliberately approved Trial publishes and is identified as a **Trial inside Instagram**, rather than merely being absent from the grid. Meta documents `trial_params.graduation_strategy=MANUAL`; Reelflow does not auto-graduate Trials. [Trial publishing](https://developers.facebook.com/documentation/instagram-platform/content-publishing#trial-reels-posts).
+- [ ] ntfy test and low-stock/error alerts reach the subscribed device; footage drought changes the queue's pacing.
+- [ ] New footage mixes into flexible positions; denied posts remain denied; edits and pinned times survive replanning.
+- [ ] Restarting the deployment retains credentials and queue state. Test network interruptions with disposable footage; reconcile any uncertain publish against Instagram before retrying.
+- [ ] Token refresh succeeds when eligible, and connection failures are visible. Initial login alone does not verify refresh.
+- [ ] A backup restores successfully into a separate, paused test deployment before any live worker is started there.
+
+To publish the pilot, reject/exclude unwanted queued clips, approve only the intended jobs, disable dry run and resume. Observe several days of real posting and alerts before removing routine approval. A publish already accepted by Instagram cannot be recalled by pausing the app.
+
+### Backups, monitoring and updates
+
+Create a consistent database snapshot:
+
+```sh
+docker compose exec -T reelflow python scripts/backup.py
+```
+
+Schedule this on your host/NAS and copy backups off the Docker host. Back up the entire persistent data volume, including hidden `/data/.runtime.json` (the token encryption key), media/uploads and database snapshots; back up watched originals separately. A database copy without its original encryption key cannot restore saved connections. Do not use `docker compose down -v` when preserving the installation.
+
+Restore with the app stopped, retaining `.runtime.json` and media and using a consistent snapshot for `reelflow.sqlite3`. Clear stale SQLite sidecars only while all database users are stopped. Keep restored test installations paused and disconnected from live publishing. See [restore details](docs/DEPLOYMENT.md#backups).
+
+Configure an external uptime monitor against your deployment, plus NAS disk-space alerts. A dead host cannot deliver its own ntfy alert. `/healthz` reports `status` and `worker_alive`; check both if your monitor supports JSON assertions. A long conversion pass can temporarily age the heartbeat. Process crashes trigger Docker restart; a hung worker needs investigation.
+
+Back up before updates. Pull and recreate using the commands above; for controlled upgrades, replace `:latest` with a tested `:sha-<full-commit>` tag. Keep the configured Compose file, admin password, Docker logs and backups private. Automated checks cover application logic and container recovery; live account/network checks remain deployment-specific.
+
 ## What is verified
 
 The automated suite exercises the real application and real FFmpeg conversion. It covers authentication/CSRF, encrypted credentials, signed media and Range requests, queue cadence and mixing, rejection persistence, conservation, account expiry, distinct Trial payloads, publishing holds, and saved-container recovery. GitHub Actions also builds and starts the Docker image on AMD64 and ARM64, checks login and persistent credentials after a restart, and verifies that a crashed worker triggers a container restart before publishing to GHCR.
 
-**Live integration is not verified until you connect your Meta app and Instagram account.** Trial availability depends on the account and API permissions. Meta's developer pages were not fully accessible during implementation; the connector uses the documented Graph container/publish flow and a separately tested Trial parameter contract. Validate one regular Reel and one eligible Trial on your account before unattended use. No footage or account credentials are bundled.
+**Live integration is not verified until you connect your Meta app and Instagram account.** Trial availability depends on the account and API permissions. The connector follows Meta's documented Graph container/publish flow and Trial parameter contract. The setup above was checked against Meta's current documentation on 20 October 2026; account-specific live acceptance remains outstanding. Validate one regular Reel and one eligible Trial on your account before unattended use. No footage or account credentials are bundled.
 
 This is a single-account, single-admin deployment. Use a separate data directory for each account. It is not a multi-tenant SaaS or an Instagram password/session scraper.
 
