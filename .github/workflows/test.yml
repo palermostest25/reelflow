@@ -25,6 +25,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - run: node --check app/static/app.js
+      - run: node --test tests/frontend.test.cjs
 
   image:
     needs: test

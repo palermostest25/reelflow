@@ -216,6 +216,7 @@ python3 -m venv .venv
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080 --no-access-log
 .venv/bin/python -m app.worker
 .venv/bin/python -m pytest -q
+node --test tests/frontend.test.cjs
 ```
 
 Install FFmpeg and FFprobe on the host for local development. Docker includes them. For source development, run the web and worker commands in separate terminals; the Docker launcher starts both automatically. Run only one deployment per local data directory; a process lock prevents overlapping worker/cron passes.
