@@ -1,9 +1,11 @@
 # Reelflow: all deployment settings live in this file. No .env file required.
-# From this checkout: docker compose up -d --build
+# Save this file on its own, then run: docker compose up -d --build
 name: reelflow
 
 x-common: &common
-  build: .
+  # Docker fetches the public source itself; no checkout or host Git is needed.
+  build:
+    context: https://github.com/palermostest25/reelflow.git#main
   image: reelflow:local
   user: "1000:1000"
   environment:

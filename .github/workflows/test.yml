@@ -17,9 +17,15 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
       - run: node --check app/static/app.js
-      - run: docker build -t reelflow:local .
-      - run: docker compose --profile https config --quiet
+      - name: Standalone Compose build with no application checkout
+        run: |
+          mkdir -p /tmp/reelflow-compose
+          cp compose.yaml /tmp/reelflow-compose/compose.yaml
+          cd /tmp/reelflow-compose
+          docker compose --profile https config --quiet
+          docker compose build
       - name: Fresh single-file Compose startup and restart
+        working-directory: /tmp/reelflow-compose
         run: |
           docker compose up -d --no-build --wait --wait-timeout 120
           docker compose exec -T web python -c "from app import config as c; c.validate_runtime(); from zoneinfo import ZoneInfo; ZoneInfo('Australia/Perth'); from pathlib import Path; assert Path('/data/.runtime.json').is_file()"
@@ -29,6 +35,7 @@ jobs:
           docker compose exec -T web python scripts/check_installation.py > /tmp/reelflow-second.txt
           cmp /tmp/reelflow-first.txt /tmp/reelflow-second.txt
       - name: Included Docker gateway forwards to the Instagram app
+        working-directory: /tmp/reelflow-compose
         run: |
           docker compose run --rm --no-deps https sh -ec '
             caddy reverse-proxy --from http://localhost:8090 --to web:8080 >/tmp/gateway-test.log 2>&1 &
@@ -45,7 +52,9 @@ jobs:
           '
       - name: Container diagnostics
         if: failure()
+        working-directory: /tmp/reelflow-compose
         run: docker compose logs --no-color | sed -E 's/(admin password:).*/\1 [redacted]/'
       - name: Stop test containers
         if: always()
+        working-directory: /tmp/reelflow-compose
         run: docker compose down -v

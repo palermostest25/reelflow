@@ -20,10 +20,10 @@ Built for TRADES, the DJ duo; configurable for any artist, creator, or business.
 ## Run it: one Compose file, all Docker
 
 ```sh
-git clone https://github.com/palermostest25/reelflow.git
-cd reelflow
 docker compose up -d --build
 ```
+
+Save [compose.yaml](https://github.com/palermostest25/reelflow/blob/main/compose.yaml) into a folder first. It is standalone: Docker fetches the application source from GitHub during the build; no local checkout or host Git is needed.
 
 Open [the local desk](http://localhost:8080), or port 8080 on your Docker host. Get the generated admin password with `docker compose logs web`. You can instead set your own `ADMIN_PASSWORD` in **compose.yaml** before starting.
 

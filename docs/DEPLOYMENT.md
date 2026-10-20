@@ -2,13 +2,13 @@
 
 ## Start
 
-You only need Docker with Compose on the host. Clone the repository and run:
+You only need Docker with Compose on the host. Save [compose.yaml](https://github.com/palermostest25/reelflow/blob/main/compose.yaml) into a folder and run:
 
 ```sh
 docker compose up -d --build
 ```
 
-The one `compose.yaml` starts the UI and the scheduled posting worker. No host Python installation, setup script, environment files, or system cron entries are needed. Open `http://DOCKER-HOST:8080`. Read your generated admin password with:
+Docker fetches the public app source during the build. The local folder needs only compose.yaml, with no source checkout or host Git. The one `compose.yaml` starts the UI and the scheduled posting worker. No host Python installation, setup script, environment files, or system cron entries are needed. Open `http://DOCKER-HOST:8080`. Read your generated admin password with:
 
 ```sh
 docker compose logs web
