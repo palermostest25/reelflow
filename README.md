@@ -71,15 +71,14 @@ Keep `PUBLIC_URL` as an origin: no extra path or trailing slash. Open the app th
 
 ### 3. Create the developer app
 
-Meta's [current app creation guide](https://developers.facebook.com/documentation/instagram-platform/create-an-instagram-app) describes this route:
+In the current dashboard:
 
-1. Choose **Create App**. For business association, select your portfolio if you have one, or the option to connect one later if offered.
-2. Select the **Other** use case, then the **Business** app type.
-3. Name the app `Reelflow` and supply a contact email you monitor. Finish creation.
-4. On its dashboard, find **Instagram** under available products and choose **Set up**.
-5. Open **Instagram → API setup with Instagram login**. Stay on this login configuration for Reelflow.
+1. Choose **Create App**, name it `Reelflow`, and enter a contact email you monitor.
+2. Select **Manage messaging & content on Instagram** as the use case. Continue through the account/business association screens and finish creating the app.
+3. In the app dashboard, open **Use cases** and click **Customize** on the Instagram card.
+4. Open **API setup with Instagram login** in the use-case menu. This is the configuration Reelflow uses.
 
-Dashboard layouts can vary by account. The destination to look for is **API setup with Instagram login**. Do not choose the Facebook Login setup or the retired Basic Display API.
+Some accounts still show the older creation flow from Meta's [app creation guide](https://developers.facebook.com/documentation/instagram-platform/create-an-instagram-app): **Other → Business**, followed by adding the Instagram product. If the direct Instagram use case is available, choose it. The destination is the same Instagram Login setup. The current dashboard path above was checked directly on 20 October 2026.
 
 ### 4. Configure business login and copy the right credentials
 
@@ -99,9 +98,7 @@ Keep the configured Compose file private. The public repository contains blank p
 
 ### 5. Add TRADES and enable the permissions Reelflow uses
 
-In the Instagram setup page's account/token section, choose **Add account**, sign in to TRADES, and complete the requested account association. If Meta creates a pending Instagram tester invitation, accept it while signed in to TRADES under Instagram's **Apps and websites → Tester invites** settings. Accounts can also be managed under **App roles → Roles**; confirm the invitation is accepted before attempting Reelflow login. The account should appear as an added account, rather than a pending invite.
-
-Check these permissions in the Instagram setup / **App Review → Permissions and features** area:
+From **Use cases → Instagram → Customize**, open **Permissions and features** and add these three permissions individually:
 
 | Permission | Reelflow uses it for |
 | --- | --- |
@@ -109,7 +106,11 @@ Check these permissions in the Instagram setup / **App Review → Permissions an
 | `instagram_business_content_publish` | Regular and Trial Reel publishing |
 | `instagram_business_manage_insights` | Available media engagement metrics |
 
-The publishing permissions are documented in [Content Publishing](https://developers.facebook.com/documentation/instagram-platform/content-publishing); the insights permission is documented in [Insights](https://developers.facebook.com/documentation/instagram-platform/insights). Reelflow requests all three when you connect. It does not need comment moderation, messaging or Human Agent permissions for its current features.
+The setup page's **Add all required permissions** button is a messaging bundle: it includes comments/DM permissions and does not replace this publishing/insights selection. Reelflow does not need comment moderation, messaging or Human Agent permissions. The publishing permissions are documented in [Content Publishing](https://developers.facebook.com/documentation/instagram-platform/content-publishing); the insights permission is documented in [Insights](https://developers.facebook.com/documentation/instagram-platform/insights). Reelflow requests all three during login.
+
+Next open **App roles → Roles** and add TRADES as an **Instagram Tester**. Accept any pending invitation while signed in to TRADES under Instagram's **Apps and websites → Tester invites** settings. Confirm the role is accepted rather than pending.
+
+Return to **API setup with Instagram login → Generate access tokens → Add account** and complete the TRADES account association. The current setup page explicitly requires the Instagram Tester role before this step. You do not need to copy a generated token into Reelflow.
 
 For this own-account setup, retain Standard Access and the required account roles. You do not need to open the app to everyone to post to TRADES. Development/Standard Access does **not** make publishing a sandbox: authorized live requests can create real posts.
 
