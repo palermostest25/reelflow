@@ -84,6 +84,8 @@ Some accounts still show the older creation flow from Meta's [app creation guide
 
 On the Instagram setup page, find **Set up Instagram business login** and choose **Set up** / **Business login settings**.
 
+On the current page this is **4. Set up Instagram business login**. The separate **3. Configure webhooks** section also has a Callback URL field and a Verify token field: **leave both webhook fields blank**. Reelflow does not need a webhook verify token. Your Instagram app secret belongs in Compose, and the following OAuth URL belongs in business-login settings.
+
 Save this exact OAuth redirect URI, replacing the hostname:
 
 ```text
