@@ -67,6 +67,7 @@ Keep `PUBLIC_URL` as an origin: no extra path or trailing slash. Open the app th
 
 - Confirm TRADES is a **public Business or Creator account**. If it is Personal, switch it to a professional account in Instagram's account settings.
 - Open the [Meta App Dashboard](https://developers.facebook.com/apps/), sign in with your Facebook developer account, and finish developer registration if prompted. The Facebook account owns the developer app; the later Instagram authorization uses TRADES' Instagram credentials.
+- If Meta keeps choosing the wrong Facebook account, open a new **Private/Incognito window**, paste `https://developers.facebook.com/apps/`, and sign in explicitly with the personal Facebook profile that should own the app. A redirect to a Facebook/Meta login page is expected. You are not creating the developer app inside a Facebook Page. After login, complete **Get started** developer registration if shown, then return to the dashboard for **Create App**. Do the later Reelflow-to-Instagram authorization as TRADES; the two logins have different purposes.
 
 ### 3. Create the developer app
 
