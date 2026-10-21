@@ -168,6 +168,7 @@ class SettingsPatch(BaseModel):
 @app.patch('/api/settings')
 def update_settings(body: SettingsPatch):
     s = settings()
+    previous_caption_config = (s['ai_model'], s['ai_vision'])
     for key,value in body.values.items():
         if key not in c.DEFAULTS:
             raise HTTPException(422,'Unknown setting: '+key)
@@ -198,6 +199,8 @@ def update_settings(body: SettingsPatch):
     with connect(True) as db:
         db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(s),))
         event('Posting settings updated.','info',db=db)
+    if previous_caption_config != (s['ai_model'], s['ai_vision']):
+        runtime('caption_retry_at',0)
     plan()
     return {'ok':True}
 
@@ -223,10 +226,7 @@ def models():
     if 'openrouter.ai' not in c.AI_BASE:
         return []
     try:
-        with httpx.Client(timeout=15) as client:
-            r = client.get('https://openrouter.ai/api/v1/models')
-            r.raise_for_status()
-        return [{'id':m['id'],'name':m['name'],'vision':'image' in m.get('architecture',{}).get('input_modalities',[])} for m in r.json()['data']]
+        return [{'id':m['id'],'name':m['name'],'vision':'image' in m.get('architecture',{}).get('input_modalities',[])} for m in ai.model_catalog()]
     except Exception:
         raise HTTPException(502,'Could not load model catalog. Enter an exact model ID manually.')
 
@@ -387,6 +387,7 @@ def regenerate(clip_id: str):
         db.execute("UPDATE clips SET caption=?,category=?,status='ready',error='',caption_source=? WHERE id=?",(caption,category,settings()['ai_model'],clip_id))
         db.execute("UPDATE jobs SET caption=?,container_id=NULL WHERE clip_id=? AND caption_locked=0 AND status IN ('queued','retry')",(caption,clip_id))
         event('Caption regenerated for '+clip['name'],db=db)
+    runtime('caption_retry_at',0)
     plan()
     return {'caption':caption}
 

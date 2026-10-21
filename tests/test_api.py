@@ -92,3 +92,28 @@ def test_xss_is_data_and_pagination_bounded(client):
     assert client.patch('/api/settings',headers=h,json={'values':{'brand_name':'<script>alert(1)</script>'}}).status_code==200
     assert client.get('/api/jobs?limit=999999').status_code==422
     assert "script-src 'self'" in client.get('/').headers['content-security-policy']
+
+
+def test_model_change_clears_caption_backoff_but_unrelated_settings_do_not(client):
+    from app.db import runtime
+    h=auth(client)
+    retry=time.time()+1800
+    runtime('caption_retry_at',retry)
+    assert client.patch('/api/settings',headers=h,json={'values':{'brand_name':'TRADES'}}).status_code==200
+    assert float(runtime('caption_retry_at'))==retry
+    assert client.patch('/api/settings',headers=h,json={'values':{'ai_model':'meta/muse-spark-1.3-contributor'}}).status_code==200
+    assert float(runtime('caption_retry_at'))==0
+
+
+def test_successful_caption_rewrite_resumes_the_waiting_batch(client,monkeypatch):
+    from app import ai
+    from app.db import runtime
+    h=auth(client);cid=seed(1,status='needs_caption')[0]
+    runtime('caption_retry_at',time.time()+1800)
+    monkeypatch.setattr(ai,'generate',lambda *args:('A real caption from the selected model.','DJ performance'))
+    response=client.post('/api/clips/'+cid+'/regenerate',headers=h)
+    assert response.status_code==200 and response.json()['caption']=='A real caption from the selected model.'
+    assert float(runtime('caption_retry_at'))==0
+    with connect() as db:
+        assert db.execute('SELECT status FROM clips WHERE id=?',(cid,)).fetchone()[0]=='ready'
+        assert db.execute('SELECT COUNT(*) FROM jobs WHERE clip_id=?',(cid,)).fetchone()[0]==2
