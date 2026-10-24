@@ -137,6 +137,9 @@ def generate(clip, s):
               'Do not copy an old caption. Never invent song names, places, dates, events, prices, testimonials, crowd reactions '
               'or booking claims. Describe only visible evidence or supplied facts. No boilerplate hashtags. '
               'Do not identify people. Do not claim to have heard audio. Avoid repeated hooks. Videos are silent image samples.')
+    if s.get('caption_instructions','').strip():
+        system += ('\nOperator caption instructions: follow these for tone, wording and style while retaining '
+                   'the JSON format, 400-character maximum and factual accuracy rules above.\n' + s['caption_instructions'].strip())
     facts = {'brand':s['brand_name'],'context':s['business_context'],'voice':s['voice_notes'],
              'clip_filename':clip['name'],'operator_notes':clip['notes'],'previous_posts':examples,
              'recent_app_captions':[r['caption'] for r in own]}

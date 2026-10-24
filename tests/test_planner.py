@@ -13,7 +13,7 @@ def jobs():
 
 def test_each_clip_has_two_unique_lanes_and_caps():
     seed(30)
-    set_settings(conserve=False,min_gap_days=0)
+    set_settings(conserve=False,min_gap_days=0,trials_per_day=3)
     plan(NOW)
     plan(NOW)
     all_jobs=jobs()
@@ -71,7 +71,7 @@ def test_same_clip_gap_and_timezone_dst():
     by_clip={}
     for j in jobs():by_clip.setdefault(j['clip_id'],[]).append(j['scheduled_at'])
     assert all(abs(v[1]-v[0])>=7*86400 for v in by_clip.values())
-    for j in jobs():assert datetime.fromtimestamp(j['scheduled_at'],ZoneInfo('America/New_York')).hour in (12,15,18,20,21)
+    for j in jobs():assert 8<=datetime.fromtimestamp(j['scheduled_at'],ZoneInfo('America/New_York')).hour<=22
 
 def test_manual_approval_is_required_for_new_jobs():
     seed(2)

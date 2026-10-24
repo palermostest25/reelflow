@@ -6,7 +6,7 @@ import re
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.sessions import SessionMiddleware
 from . import config as c
 from .db import init, connect, settings, secret, event, runtime
-from .planner import plan, conservation
+from .planner import plan, conservation, daily_limit, runway_days
 from .security import verify_media
 from . import instagram as ig, ai, notifications as ntfy
 from .worker import tick, finish
@@ -118,18 +118,54 @@ def state(request: Request):
         account = db.execute('SELECT username,expires_at,synced_at FROM account WHERE id=1').fetchone()
         counts = {r['status']:r['n'] for r in db.execute('SELECT status,COUNT(*) n FROM clips GROUP BY status')}
         remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane='main' AND j.status IN ('queued','retry') AND c.disabled=0").fetchone()[0]
+        trial_remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane='trial' AND j.status IN ('queued','retry') AND c.disabled=0").fetchone()[0]
         published = db.execute("SELECT COUNT(*) FROM jobs WHERE status='published'").fetchone()[0]
         imported = db.execute('SELECT COUNT(*) FROM history').fetchone()[0]
         issues = db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('uncertain','failed')").fetchone()[0]
         next_post = db.execute("SELECT j.*,c.name FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry','processing') AND j.scheduled_at IS NOT NULL AND c.disabled=0 ORDER BY j.scheduled_at LIMIT 1").fetchone()
         metric_count = db.execute("SELECT COUNT(*) FROM history WHERE origin='reelflow' AND reach>0 AND metrics_at>timestamp+86400").fetchone()[0]
-    interval = conservation(s,remaining,time.time())
-    return {'settings':s,'account':dict(account) if account else None,'counts':counts,'main_remaining':remaining,
-            'runway_days':remaining*interval,'interval':interval,'published':published,'imported':imported,'issues':issues,
+    interval = conservation(s,remaining if daily_limit(s,'main') else trial_remaining,time.time())
+    return {'settings':s,'account':dict(account) if account else None,'counts':counts,'main_remaining':remaining,'trial_remaining':trial_remaining,
+            'runway_days':runway_days(s,remaining,trial_remaining,interval),'interval':interval,'published':published,'imported':imported,'issues':issues,
             'next_post':dict(next_post) if next_post else None,'heartbeat':runtime('heartbeat'),
             'csrf':request.session.get('csrf',''),'demo':c.DEMO,'meta_configured':bool(c.META_ID and c.META_SECRET),
             'ai_configured':bool(ai.api_key()),'ai_base':c.AI_BASE,'ntfy_token_set':bool(secret('ntfy_token')),
             'metric_samples':metric_count,'public_url':c.PUBLIC_URL,'footage_path':str(c.FOOTAGE)}
+
+@app.get('/api/schedule')
+def schedule(days: int = None):
+    """Read the actual persisted queue, grouped in the audience's local calendar."""
+    s = settings()
+    days = s['preview_days'] if days is None else days
+    if not 1 <= days <= 90:
+        raise HTTPException(422,'Choose between 1 and 90 preview days.')
+    now = time.time()
+    tz = ZoneInfo(s['timezone'])
+    start = datetime.fromtimestamp(now,tz).replace(hour=0,minute=0,second=0,microsecond=0)
+    end = start + timedelta(days=days)
+    with connect() as db:
+        rows = [dict(r) for r in db.execute("""SELECT j.*,c.name,c.duration,c.category,c.disabled
+            FROM jobs j JOIN clips c ON c.id=j.clip_id
+            WHERE j.status!='rejected' AND c.disabled=0
+            AND COALESCE(j.published_at,j.scheduled_at)>=? AND COALESCE(j.published_at,j.scheduled_at)<?
+            ORDER BY COALESCE(j.published_at,j.scheduled_at),j.id""",(start.timestamp(),end.timestamp()))]
+        unscheduled = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry') AND c.disabled=0 AND j.scheduled_at IS NULL").fetchone()[0]
+        overdue = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status NOT IN ('published','rejected') AND c.disabled=0 AND j.scheduled_at<?",(start.timestamp(),)).fetchone()[0]
+        preparing = db.execute("SELECT COUNT(*) FROM clips WHERE disabled=0 AND status IN ('processing','captioning','needs_caption')").fetchone()[0]
+        counts = {r['lane']:r['n'] for r in db.execute("SELECT j.lane,COUNT(*) n FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry') AND c.disabled=0 GROUP BY j.lane")}
+    interval = conservation(s,counts.get('main',0) if daily_limit(s,'main') else counts.get('trial',0),now)
+    calendar = {}
+    for offset in range(days):
+        local = start + timedelta(days=offset)
+        key = local.date().isoformat()
+        calendar[key] = {'date':key,'timestamp':local.timestamp(),'number':offset+1,'main':[],'trial':[]}
+    for job in rows:
+        key = datetime.fromtimestamp(job['published_at'] or job['scheduled_at'],tz).date().isoformat()
+        calendar[key][job['lane']].append(job)
+    return {'days':list(calendar.values()),'timezone':s['timezone'],'interval':interval,
+            'limits':{lane:daily_limit(s,lane,interval) for lane in ('main','trial')},
+            'unscheduled':unscheduled,'overdue':overdue,'preparing':preparing,
+            'totals':{lane:sum(r['lane']==lane and r['status']!='published' for r in rows) for lane in ('main','trial')}}
 
 @app.get('/api/jobs')
 def jobs(status: str='upcoming', lane: str='', offset: int=0, limit: int=100):
@@ -168,7 +204,8 @@ class SettingsPatch(BaseModel):
 @app.patch('/api/settings')
 def update_settings(body: SettingsPatch):
     s = settings()
-    previous_caption_config = (s['ai_model'], s['ai_vision'])
+    caption_fields = ('ai_model','ai_vision','caption_instructions','voice_notes','business_context','brand_name')
+    previous_caption_config = tuple(s[k] for k in caption_fields)
     for key,value in body.values.items():
         if key not in c.DEFAULTS:
             raise HTTPException(422,'Unknown setting: '+key)
@@ -182,13 +219,17 @@ def update_settings(body: SettingsPatch):
         ZoneInfo(s['timezone'])
         if s['drought_until']:
             datetime.strptime(s['drought_until'],'%Y-%m-%d')
-        assert 1<=s['trials_per_day']<=3 and 0<=s['low_watermark']<=365 and 0<=s['min_gap_days']<=90
+        assert 0<=s['trials_per_day']<=10 and 0<=s['main_per_day']<=10
+        assert 1<=s['preview_days']<=90 and 0<=s['low_watermark']<=365 and 0<=s['min_gap_days']<=90
+        assert 2<=s['conserve_every_days']<=14 and 1<=s['conserve_main_per_day']<=10 and 1<=s['conserve_trials_per_day']<=10
+        assert 0<=s['posting_start_hour']<s['posting_end_hour']<=23
+        assert s['posting_end_hour']-s['posting_start_hour'] >= (max(s['trials_per_day'],s['main_per_day'])-1)*1.5
         assert len(s['schedule_hours'])==7 and all(type(h) is int and 0<=h<=23 for h in s['schedule_hours'])
         u = urlparse(s['ntfy_url'])
         assert u.scheme=='https' and u.netloc and not u.username and not u.password and not u.query and not u.fragment
         assert not s['ntfy_topic'] or re.fullmatch(r'[A-Za-z0-9_-]{1,120}',s['ntfy_topic'])
     except Exception:
-        raise HTTPException(422,'Check timezone, dates, daily limits, posting hours and notification URL/topic.')
+        raise HTTPException(422,'Check timezone, dates, daily limits (0–10), preview days (1–90), and notification URL/topic. The posting window must allow at least 90 minutes between posts to the same destination.')
     if c.DEMO and (not s['paused'] or not s['dry_run']):
         raise HTTPException(409,'Preview cannot publish. Use the Docker deployment to go live.')
     if not s['dry_run']:
@@ -199,7 +240,7 @@ def update_settings(body: SettingsPatch):
     with connect(True) as db:
         db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(s),))
         event('Posting settings updated.','info',db=db)
-    if previous_caption_config != (s['ai_model'], s['ai_vision']):
+    if previous_caption_config != tuple(s[k] for k in caption_fields):
         runtime('caption_retry_at',0)
     plan()
     return {'ok':True}

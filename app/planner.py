@@ -19,36 +19,55 @@ def window_scores(db, tz, lane):
         scores.setdefault(key, []).append(min(interactions / r['reach'], 1))
     return scores
 
-def hours_for(db, s, day, lane):
+def daily_limit(s, lane, interval=1):
+    if lane == 'trial' and not s['trials_enabled']:
+        return 0
+    cap = s['main_per_day'] if lane == 'main' else s['trials_per_day']
+    return min(cap, s['conserve_main_per_day'] if lane == 'main' else s['conserve_trials_per_day']) if interval > 1 else cap
+
+def hours_for(db, s, day, lane, limit=None):
+    count = daily_limit(s, lane) if limit is None else limit
+    if not count:
+        return [], 'This destination is switched off'
     scores = window_scores(db, ZoneInfo(s['timezone']), lane)
-    baseline = int(s['schedule_hours'][day.weekday()])
-    candidates = sorted(set([baseline, 12, 15, 18, 20, 21]))
+    start, end = s['posting_start_hour'], s['posting_end_hour']
+    baseline = max(start, min(end, int(s['schedule_hours'][day.weekday()])))
+    candidates = list(range(start, end+1))
     # Deterministic exploration on 1/5 days; otherwise learn with shrinkage.
-    explore = day.toordinal() % 5 == 0
+    explore = s['learn_timing'] and day.toordinal() % 5 == 0
     def score(h):
         vals = scores.get((day.weekday(), h), [])
         return (sum(vals) + .04 * 5) / (len(vals) + 5)
     observed = sum(len(v) for k, v in scores.items() if k[0] == day.weekday())
-    best = max(candidates, key=lambda h: (score(h), h == baseline)) if observed >= 5 and not explore else baseline
+    learned = s['learn_timing'] and observed >= 5 and not explore
+    best = max(candidates, key=lambda h: (score(h), h == baseline)) if learned else baseline
     if explore:
         best = candidates[(day.toordinal() // 5) % len(candidates)]
-    reason = 'Learning from mature Reel engagement' if observed >= 5 and not explore else 'Test window · audience timing still learning'
-    if lane == 'main':
-        return [best], reason
-    alternatives = sorted([h for h in candidates if abs(h-best) >= 2], key=lambda h: (-score(h), h))
+    reason = ('Learning from mature Reel engagement' if learned else 'Test window · audience timing still learning') if s['learn_timing'] else 'Your configured posting window'
+    # Half-hour slots let a wide window support ten posts without bunching them up.
+    candidates = [minute/60 for minute in range(start*60, end*60+1, 30)]
     picks = [best]
-    for h in alternatives:
-        if all(abs(h-x) >= 2 for x in picks):
-            picks.append(h)
-        if len(picks) >= s['trials_per_day']:
+    while len(picks) < count:
+        available = [h for h in candidates if all(abs(h-x) >= 1.5 for x in picks)]
+        if not available:
             break
-    return sorted(picks[:s['trials_per_day']]), reason
+        picks.append(max(available, key=lambda h: (min(abs(h-x) for x in picks), score(int(h)), -h)))
+    # A centred first pick can strand room at both ends; evenly spread if needed.
+    if len(picks) < count:
+        picks = [start + (end-start)*i/(count-1) for i in range(count)]
+    return sorted(picks), reason
 
 def conservation(s, main_count, now):
     days = max(0, (datetime.fromisoformat(s['drought_until']).date() - datetime.fromtimestamp(now, ZoneInfo(s['timezone'])).date()).days) if s['drought_until'] else 0
     if not s['conserve']:
         return 1
-    return 2 if main_count <= s['low_watermark'] or (days and main_count < days) else 1
+    cap = daily_limit(s, 'main') or daily_limit(s, 'trial')
+    return s['conserve_every_days'] if cap and (main_count <= s['low_watermark'] or (days and main_count < days*cap)) else 1
+
+def runway_days(s, main_count, trial_count, interval):
+    lane, count = ('main', main_count) if daily_limit(s, 'main') else ('trial', trial_count)
+    cap = daily_limit(s, lane, interval)
+    return math.ceil(count/cap)*interval if cap else 0
 
 def plan(now=None):
     now = now or time.time()
@@ -60,7 +79,9 @@ def plan(now=None):
                 db.execute('INSERT OR IGNORE INTO jobs(clip_id,lane,caption,approved) VALUES(?,?,?,?)', (r['id'], lane, r['caption'], int(not s['require_approval'])))
         jobs = db.execute("SELECT j.*,c.created_at,c.category FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry') AND c.disabled=0 AND c.status='ready'").fetchall()
         main_count = sum(j['lane'] == 'main' for j in jobs)
-        interval = conservation(s, main_count, now)
+        trial_count = sum(j['lane'] == 'trial' for j in jobs)
+        stock_count = main_count if daily_limit(s, 'main') else trial_count
+        interval = conservation(s, stock_count, now)
         run_day = datetime.fromtimestamp(now, tz).date()
         seed = run_day.isoformat()
         # Recompute all flexible jobs so a new intake batch is mingled, never just appended.
@@ -69,7 +90,8 @@ def plan(now=None):
             pending = [j for j in jobs if j['lane'] == lane and not j['pinned'] and j['id'] not in protected]
             for j in pending:
                 db.execute('UPDATE jobs SET scheduled_at=NULL WHERE id=?',(j['id'],))
-            if lane == 'trial' and not s['trials_enabled']:
+            cap = daily_limit(s, lane, interval)
+            if not cap:
                 continue
             fixed = db.execute("SELECT clip_id,scheduled_at,published_at FROM jobs WHERE lane=? AND (status='published' OR (pinned=1 AND status IN ('queued','retry')) OR status IN ('processing','publishing','uncertain'))", (lane,)).fetchall()
             fixed = list(fixed) + [j for j in jobs if j['lane']==lane and j['id'] in protected and not j['pinned']]
@@ -81,31 +103,31 @@ def plan(now=None):
                 if not pending:
                     break
                 day = datetime.combine(run_day + timedelta(days=offset), datetime.min.time(), tz)
-                hours, reason = hours_for(db, s, day, lane)
-                # In conservation mode Trial cadence also drops to one on regular-post days.
-                if lane == 'trial' and interval > 1:
-                    hours = hours[:1]
+                hours, reason = hours_for(db, s, day, lane, cap)
                 for hour in hours:
-                    ts = day.replace(hour=hour).timestamp()
+                    minute = round(hour*60)
+                    ts = day.replace(hour=minute//60, minute=minute%60).timestamp()
                     if ts < now + 300 or not pending:
                         continue
                     same_day = [x for x in occupied if datetime.fromtimestamp(x, tz).date() == day.date()]
-                    if len(same_day) >= (1 if lane == 'main' or interval > 1 else s['trials_per_day']):
+                    if len(same_day) >= cap:
                         continue
-                    if interval > 1 and any(abs((day.date()-datetime.fromtimestamp(x, tz).date()).days) < 2 for x in occupied):
+                    if interval > 1 and any(0 < abs((day.date()-datetime.fromtimestamp(x, tz).date()).days) < interval for x in occupied):
                         continue
                     if any(abs(ts-x) < 5400 for x in occupied):
                         continue
                     for j in sorted(pending, key=lambda x: (x['category'] == last_category and bool(last_category), rank(x))):
                         other = db.execute("SELECT scheduled_at,published_at FROM jobs WHERE clip_id=? AND lane!=? AND status NOT IN ('rejected','failed')", (j['clip_id'], lane)).fetchone()
                         other_at = (other['published_at'] or other['scheduled_at']) if other else None
-                        if other_at and abs(ts-other_at) < s['min_gap_days'] * 86400:
+                        other_enabled = daily_limit(s,'trial' if lane=='main' else 'main')
+                        if other_enabled and other_at and abs(ts-other_at) < s['min_gap_days'] * 86400:
                             continue
                         break
                     else:
                         continue
-                    db.execute('UPDATE jobs SET scheduled_at=?,reason=? WHERE id=?', (ts, ('Footage conservation · every second day. ' if interval > 1 else '') + reason, j['id']))
+                    db.execute('UPDATE jobs SET scheduled_at=?,reason=? WHERE id=?', (ts, ('Footage conservation · every %s days. ' % interval if interval > 1 else '') + reason, j['id']))
                     occupied.append(ts)
                     last_category = j['category']
                     pending.remove(j)
-        return {'interval': interval, 'main_remaining': main_count, 'runway_days': main_count * interval, 'drought_target_days': max(0, (datetime.fromisoformat(s['drought_until']).date() - datetime.fromtimestamp(now,tz).date()).days) if s['drought_until'] else 0}
+        return {'interval': interval, 'main_remaining': main_count, 'stock_remaining': stock_count,
+                'runway_days': runway_days(s, main_count, trial_count, interval), 'drought_target_days': max(0, (datetime.fromisoformat(s['drought_until']).date() - datetime.fromtimestamp(now,tz).date()).days) if s['drought_until'] else 0}

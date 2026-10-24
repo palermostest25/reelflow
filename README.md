@@ -12,11 +12,11 @@ Start with [Docker deployment](#run-it-one-container-one-compose-file), follow t
 - Waits for files to settle, deduplicates by SHA-256, validates video, prepares 1080×1920 H.264/AAC MP4s, and generates previews. Original footage stays untouched. Nonvertical footage is letterboxed rather than cropped.
 - Writes one- or two-sentence captions from three silent video frames, account context, operator notes, and up to 30 previous captions with available engagement counts. OpenRouter OAuth PKCE or an OpenAI-compatible API key; choose an actual model from the live catalog.
 - Creates **one regular Reel and one Trial Reel per unique clip**. Regular Reels share to feed; Trials use `trial_params.graduation_strategy=MANUAL` and never silently fall back to regular Reels. No automatic Trial graduation.
-- Schedules one regular Reel daily and up to three Trials daily. With conservation enabled, low stock or an upcoming footage drought slows both lanes to one post every second calendar day. Normal cadence returns when sufficient new footage arrives.
+- Schedules up to five Trial Reels and one grid Reel daily by default. Both daily limits (0–10), the preview length (1–90 days), posting window and timing learning are editable in the UI. Conservation has its own editable cadence and daily counts; its defaults are one post per lane every second day. Normal cadence returns when sufficient new footage arrives.
 - Mixes new clips into flexible queue positions, avoids adjacent scene categories where practical, and keeps edited captions and pinned times intact. Default same-clip separation across lanes: one day, editable down to zero.
 - Starts with editable posting windows for every weekday. After at least five mature, same-weekday observations in a lane, smoothed engagement per reach guides time selection. Every fifth calendar date explores a window. These are experiments, not a promise of optimal reach.
 - Shows a queue, playable footage library, caption/time editor, approve/reject/restore actions, published history, metrics, errors, and a durable activity log.
-- Sends ntfy stock, shortage, connection and publishing alerts with delivery retries. Enter a "no new footage until" date in Settings. If alternate-day pacing cannot cover it, Reelflow tells you; it does not invent footage or recycle clips secretly.
+- Sends ntfy stock, shortage, connection and publishing alerts with delivery retries. Enter a "no new footage until" date in Settings. If your conservation pace cannot cover it, Reelflow tells you; it does not invent footage or recycle clips secretly.
 - Persists containers before publishing. A timeout or crash at the publish boundary produces a reconciliation hold; it does **not** trigger an automatic duplicate post.
 
 ## Run it: one container, one Compose file
@@ -43,6 +43,18 @@ To update:
 docker compose pull
 docker compose up -d
 ```
+
+## Plan before publishing
+
+Open **Up next → By day**. Choose the number of preview days, **Trial Reels / day** and **Grid Reels / day**, then click **Save & build schedule**. The preview shows Day 1, Day 2 and so on, with separate Trial and grid columns, actual clips, captions, times, approval status and pinned times. Click any post to review, edit or reject it. **Post list** retains the full queue, including posts needing attention outside the preview.
+
+Daily limits range from 0 to 10 per destination; 0 stops that destination. New installations default to **five Trials and one grid Reel per day**. Updates preserve existing saved settings: if you previously had three Trials, change it to five in this UI. The preview defaults to seven days and supports 1–90. Building a schedule leaves pause/dry-run controls unchanged. Review while paused before resuming; no dummy posts fill gaps when footage, captions or suitable slots are unavailable.
+
+In **Settings → The posting rhythm**, change the timezone, first/last posting hours, preferred hour for each weekday and whether times learn from engagement. Extra posts spread across the posting window, with at least 90 minutes between posts to the same destination. A high daily limit needs a wide enough window. Daily publishing limits use the configured timezone's calendar day. Pinned times survive replanning, but do not bypass the publisher's daily limits. In **Keep the footage going**, change the low-stock threshold, footage break date, conservation interval and each destination's limit on active days. Runway estimates follow the configured daily pace.
+
+**Trials and grid posts have different audiences.** Trial Reels use Instagram's native Trial mode, shown to non-followers first and kept off your profile grid; automatic graduation stays disabled. Followers can still encounter a Trial through a direct share or an audio page. Grid Reels are regular Reels shared to your profile and feed. Account eligibility and distribution are controlled by Instagram. [Meta's explanation of Trial Reels](https://about.fb.com/news/2024/12/trial-reels-try-content-non-followers-first-see-what-perfoms-best/).
+
+In **Settings → Captions & voice → Custom caption instructions**, enter the directions you want the model to follow: tone, lowercase/uppercase, emoji, hashtags, preferred wording or phrases to avoid. Save settings. These instructions are sent with every new caption and every **Rewrite caption** request, alongside account history and footage samples. Existing captions and individually edited post captions are retained; use Rewrite on a clip when you want a new draft. Instructions cannot bypass the factual accuracy rules, caption length limit or required response format.
 
 ## First-time setup: Meta and Instagram
 

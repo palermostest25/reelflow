@@ -30,7 +30,7 @@ def test_auth_csrf_and_login_rate_limit(client):
 
 def test_settings_strict_and_live_gate(client):
     h=auth(client)
-    for values in ({'timezone':'Mars/Nope'},{'trials_per_day':4},{'paused':'false'},{'ntfy_topic':'../x'},{'schedule_hours':[24]*7},{'drought_until':'never'}):
+    for values in ({'timezone':'Mars/Nope'},{'trials_per_day':11},{'paused':'false'},{'ntfy_topic':'../x'},{'schedule_hours':[24]*7},{'drought_until':'never'}):
         assert client.patch('/api/settings',headers=h,json={'values':values}).status_code==422
     assert client.patch('/api/settings',headers=h,json={'values':{'dry_run':False}}).status_code==409
 

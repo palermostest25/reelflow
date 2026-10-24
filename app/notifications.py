@@ -32,8 +32,8 @@ def flush():
 
 def stock_alert(summary):
     s = settings()
-    if summary['main_remaining'] <= s['low_watermark']:
+    if summary.get('stock_remaining',summary['main_remaining']) <= s['low_watermark'] and (s['main_per_day'] or (s['trials_enabled'] and s['trials_per_day'])):
         day = time.strftime('%Y-%m-%d',time.gmtime())
-        enqueue('stock:'+day,'Footage is running low: %s regular Reels left, approximately %s days at the current pace. Open Reelflow to set when more footage is coming.'%(summary['main_remaining'],summary['runway_days']))
-    if summary['drought_target_days'] > summary['runway_days']:
-        enqueue('drought:'+s['drought_until'],'Even every-second-day posting cannot cover the footage drought. Add clips or pause posting before the library runs out.')
+        enqueue('stock:'+day,'Footage is running low: %s clips left for the active posting rhythm, approximately %s days at the current pace. Open Reelflow to set when more footage is coming.'%(summary.get('stock_remaining',summary['main_remaining']),summary['runway_days']))
+    if (s['main_per_day'] or (s['trials_enabled'] and s['trials_per_day'])) and summary['drought_target_days'] > summary['runway_days']:
+        enqueue('drought:'+s['drought_until'],'Even the configured conservation pace cannot cover the footage drought. Add clips or pause posting before the library runs out.')

@@ -5,10 +5,12 @@ import logging
 import sys
 import time
 from contextlib import contextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from . import config as c
 from .db import init, connect, settings, event, runtime
 from . import media, ai, instagram as ig, notifications as ntfy
-from .planner import plan
+from .planner import plan, daily_limit, conservation
 from .security import media_url
 
 log = logging.getLogger('reelflow')
@@ -61,7 +63,7 @@ def advance(job_id, now):
         return
     if job['status'] in ('published','rejected','failed'):
         return
-    if job['lane']=='trial' and not s['trials_enabled']:
+    if not daily_limit(s,job['lane']):
         return
     if not job['approved']:
         return
@@ -108,7 +110,7 @@ def advance(job_id, now):
             disabled = db.execute('SELECT disabled FROM clips WHERE id=?',(job['clip_id'],)).fetchone()[0]
             if disabled:
                 return
-            if (job['lane']=='trial' and not current['trials_enabled']):
+            if not daily_limit(current,job['lane']):
                 return
             if current['paused'] or current['dry_run'] or not fresh['approved'] or fresh['status'] not in ('processing','retry','queued'):
                 return
@@ -116,9 +118,11 @@ def advance(job_id, now):
                 db.execute("UPDATE jobs SET container_id=NULL,status='queued' WHERE id=?",(job_id,))
                 return
             # Stale jobs roll forward via replanning; don't burst catch-up posts.
-            start = now - 20*3600
-            recent = db.execute("SELECT COUNT(*) FROM jobs WHERE lane=? AND status='published' AND published_at>?",(job['lane'],start)).fetchone()[0]
-            cap = 1 if job['lane']=='main' else s['trials_per_day']
+            start = datetime.fromtimestamp(now,ZoneInfo(current['timezone'])).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
+            recent = db.execute("SELECT COUNT(*) FROM jobs WHERE lane=? AND status='published' AND published_at>=?",(job['lane'],start)).fetchone()[0]
+            stock_lane = 'main' if daily_limit(current,'main') else 'trial'
+            remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane=? AND j.status IN ('queued','retry') AND c.disabled=0",(stock_lane,)).fetchone()[0]
+            cap = daily_limit(current,job['lane'],conservation(current,remaining,now))
             if recent >= cap:
                 return
             db.execute("UPDATE jobs SET status='publishing',publish_started=? WHERE id=?",(now,job_id))
