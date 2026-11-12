@@ -79,6 +79,8 @@ def save_credentials(body: Credentials):
             raise HTTPException(422,'Enter the client secret for this OAuth client.')
         if db.execute("SELECT 1 FROM youtube_jobs WHERE status IN ('uploading','uncertain') LIMIT 1").fetchone():
             raise HTTPException(409,'Finish or resolve in-progress uploads before changing Google credentials.')
+        if db.execute("SELECT 1 FROM secrets WHERE name LIKE 'youtube_upload:%' LIMIT 1").fetchone():
+            raise HTTPException(409,'Resolve saved upload sessions before changing Google credentials.')
         secret('youtube_oauth',json.dumps({'client_id':client_id,'client_secret':client_secret}),db=db)
         db.execute("UPDATE youtube_account SET error='' WHERE id=1")
     return {'ok':True}

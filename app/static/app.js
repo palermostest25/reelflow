@@ -176,7 +176,7 @@ function youtubeWorkspace(data){
   <div class="youtube-status-strip"><div><span class="worker-indicator ${data.connected&&!data.preferences.paused?'online':''}"></span><div>
     <strong>${data.preferences.paused?'Automatic uploads paused':data.connected?'Automatic uploads enabled':'Waiting for channel connection'}</strong>
     <p>${data.preferences.auto_approve?'New automatic drafts are scheduled.':'Review new drafts before scheduling.'} ${data.queue_count} in queue.</p>
-  </div></div><button type="button" class="button small" data-yt-control="pause" ${!data.connected&&data.preferences.paused?'disabled':''}>${data.preferences.paused?'Resume automatic uploads':'Pause automatic uploads'}</button></div>
+  </div></div><button type="button" class="button small" data-yt-control="${data.connected?'pause':'setup'}">${!data.connected?'Connect channel':data.preferences.paused?'Resume automatic uploads':'Pause automatic uploads'}</button></div>
   <div class="youtube-layout">
    <section class="youtube-queue" aria-labelledby="youtube-queue-title"><div class="section-head"><h2 id="youtube-queue-title">Upload queue</h2>
     <div class="tabs" role="group" aria-label="YouTube queue view">${tabs.map(([key,text])=>`<button type="button" class="tab ${youtubeView===key?'active':''}" data-youtube-view="${key}" aria-pressed="${youtubeView===key}">${text}</button>`).join('')}</div></div>
@@ -303,6 +303,10 @@ function bindYoutube(){
    await api('/api/youtube/disconnect','POST');await render();toast('YouTube disconnected.');break;
   case 'upload': chooseUpload('youtube');break;
   case 'scan': toast((await api('/api/youtube/scan','POST')).message);break;
+  case 'setup':
+   $('#youtube-connection').open=true;
+   $('#youtube-connection summary').focus();
+   break;
   case 'pause': {
    const paused=!youtubeData.preferences.paused;
    if(!paused&&!window.confirm('Resume scheduled YouTube uploads with their saved visibility?'))return;

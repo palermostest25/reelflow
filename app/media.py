@@ -150,13 +150,14 @@ def process(path, clip_id):
         db.execute("UPDATE jobs SET container_id=NULL WHERE clip_id=? AND status IN ('queued','retry','processing')",(clip_id,))
         event('Footage prepared in its original aspect ratio: '+path.name,db=db)
 
-def settled_file(path, now):
+def settled_file(path, now, *, intake_key=None):
     stat = path.stat()
+    key = intake_key or str(path)
     # Observe size and modification time twice so a NAS copy can finish.
     with connect(True) as db:
-        row = db.execute('SELECT * FROM files WHERE path=?',(str(path),)).fetchone()
+        row = db.execute('SELECT * FROM files WHERE path=?',(key,)).fetchone()
         if not row or row['size']!=stat.st_size or row['mtime']!=stat.st_mtime:
-            db.execute('INSERT OR REPLACE INTO files VALUES(?,?,?,?,0)',(str(path),stat.st_size,stat.st_mtime,now))
+            db.execute('INSERT OR REPLACE INTO files VALUES(?,?,?,?,0)',(key,stat.st_size,stat.st_mtime,now))
             return None
         if not row['done'] and now-row['seen_at']>=30:
             return stat

@@ -17,6 +17,10 @@ def test_finished_sets_use_separate_folder_and_content_deduplication(monkeypatch
     (root/'Too short.mp4').write_bytes(b'short set')
     monkeypatch.setattr(media,'video_info',lambda path:(900 if path.name=='Too short.mp4' else 1500,1920,1080))
     now = time.time()
+    previously_seen = root/'Set One.mp4'
+    stat = previously_seen.stat()
+    with connect(True) as db:
+        db.execute('INSERT INTO files VALUES(?,?,?,?,1)',(str(previously_seen),stat.st_size,stat.st_mtime,now-86400))
     yt.scan_sets(now)
     assert media.scan(now+31)==0
     yt.scan_sets(now+31)

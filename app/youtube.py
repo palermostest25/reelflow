@@ -190,8 +190,9 @@ def scan_sets(now):
                 continue
             if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
                 continue
+            intake_key = 'youtube:'+str(path)
             try:
-                stat = media.settled_file(path,now)
+                stat = media.settled_file(path,now,intake_key=intake_key)
                 if stat is None:
                     continue
                 error = ''
@@ -215,7 +216,7 @@ def scan_sets(now):
                 prefs = preferences(db)
                 add_draft(db,prefs,'set',key,path.name,duration,path=str(path),stamp=source_stamp(stat),
                           error=error,approve=prefs.auto_approve)
-                db.execute('UPDATE files SET done=1 WHERE path=?',(str(path),))
+                db.execute('UPDATE files SET done=1 WHERE path=?',(intake_key,))
             prepared += 1
             if prepared>=2:
                 return
