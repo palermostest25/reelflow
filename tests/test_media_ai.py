@@ -41,6 +41,14 @@ def test_rebuild_uses_original_without_replacing_captions_or_pinned_time():
     with connect() as db:
         assert tuple(db.execute('SELECT status,caption,media_version FROM clips').fetchone())==('ready','Saved clip caption',media.MEDIA_VERSION)
         assert tuple(db.execute('SELECT scheduled_at,pinned,caption,container_id FROM jobs').fetchone())==(now+3600,1,'Edited post caption',None)
+    # A deliberate rebuild also refreshes the local export of a published clip.
+    with connect(True) as db:
+        db.execute('UPDATE clips SET media_version=?,disabled=1',(media.REBUILD_REQUESTED,))
+        db.execute("UPDATE jobs SET status='published',container_id='published-container'")
+    media.scan(now+1)
+    with connect() as db:
+        assert db.execute('SELECT media_version FROM clips').fetchone()[0]==media.MEDIA_VERSION
+        assert tuple(db.execute('SELECT status,container_id FROM jobs').fetchone())==('published','published-container')
 
 def test_missing_ai_key_never_creates_placeholder():
     cid=seed(1,status='captioning')[0]

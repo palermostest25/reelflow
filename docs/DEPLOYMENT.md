@@ -73,7 +73,7 @@ The footage mount is read-only; originals are never modified. Browser uploads, p
 
 You can also upload footage through the UI. Inputs up to 5 GB are accepted; publishable clips must be 3 seconds to 15 minutes. Prepared output is H.264/AAC with a 1 GB cap, a longest side of up to 1920 pixels, and the original display aspect ratio and audio. Reelflow does not add bars or crop the picture. Bars already in the source remain part of the video, and Instagram can still frame the player differently across placements. [Meta's Reel publishing specs](https://www.postman.com/meta/instagram/folder/830j7my/reels-publishing).
 
-On upgrade, the worker rebuilds older padded exports for upcoming posts from the original files. Keep those files at their import locations. Check the updated clip preview while paused before resuming. Captions, approvals and pinned times are retained; already published Reels cannot be reframed by an app update. If the source is missing, restore it and choose **Retry preparation** in the clip editor.
+On upgrade, the worker rebuilds older padded exports for upcoming posts from the original files. Keep those files at their import locations. To force every local video to be prepared again, use **Footage library → Rebuild all videos**. The worker rebuilds in batches; clips with an unresolved publish wait until it is resolved. Open a clip to see the export dimensions and choose **Download export** to inspect the actual MP4. Check the updated preview while paused before resuming. Captions, approvals and pinned times are retained; already published Reels cannot be reframed by an app update. If the source is missing, restore it and choose **Retry preparation** in the clip editor.
 
 ## Captions, notifications and first posts
 

@@ -11,6 +11,7 @@ from .db import connect, event
 
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.webm'}
 MEDIA_VERSION = 1
+REBUILD_REQUESTED = -1
 
 def run(args, timeout=1800):
     result = subprocess.run(args, capture_output=True, timeout=timeout)
@@ -105,12 +106,12 @@ def scan(now=None):
     with connect() as db:
         pending = db.execute("""SELECT c.* FROM clips c WHERE
             NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status IN ('publishing','uncertain'))
-            AND (c.status='processing' OR (c.media_version<? AND c.disabled=0
-                AND c.status IN ('ready','captioning','needs_caption')
-                AND (NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id)
-                    OR EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status NOT IN ('published','rejected')))))
+            AND (c.status='processing' OR (c.status IN ('ready','captioning','needs_caption')
+                AND (c.media_version=? OR (c.media_version<? AND c.disabled=0
+                    AND (NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id)
+                        OR EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status NOT IN ('published','rejected')))))))
             ORDER BY COALESCE((SELECT MIN(j.scheduled_at) FROM jobs j WHERE j.clip_id=c.id
-                AND j.status IN ('queued','retry','processing')),1e20), c.created_at LIMIT 4""", (MEDIA_VERSION,)).fetchall()
+                AND j.status IN ('queued','retry','processing')),1e20), c.created_at LIMIT 4""", (REBUILD_REQUESTED,MEDIA_VERSION)).fetchall()
     for clip in pending:
         try:
             path = Path(clip['source'])

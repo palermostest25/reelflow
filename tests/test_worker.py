@@ -35,6 +35,34 @@ def test_old_encode_waits_for_rebuild_before_publishing(job,monkeypatch):
     worker.advance(job,time.time())
     assert row(job)['status']=='queued'
 
+def test_rebuild_requested_during_upload_holds_publish(job,monkeypatch):
+    def create(*args):
+        with connect(True) as db:
+            db.execute('UPDATE clips SET media_version=?',(worker.media.REBUILD_REQUESTED,))
+        return 'old-container'
+    monkeypatch.setattr(ig,'create_container',create)
+    monkeypatch.setattr(ig,'publish',lambda *a:pytest.fail('Must wait for the rebuilt export'))
+    worker.advance(job,time.time())
+    assert row(job)['status']=='processing'
+
+def test_post_now_publishes_only_requested_reel_while_paused(job,monkeypatch):
+    set_settings(paused=True)
+    other_clip=seed(1,prefix='other')[0]
+    now=time.time()
+    with connect(True) as db:
+        db.execute('UPDATE clips SET media_version=?',(worker.media.MEDIA_VERSION,))
+        db.execute('UPDATE jobs SET post_now_at=?,approved=0,scheduled_at=? WHERE id=?',(now,now+86400,job))
+        other=db.execute("INSERT INTO jobs(clip_id,lane,caption,scheduled_at) VALUES(?,'main','Other caption',?)",(other_clip,now-60)).lastrowid
+    for name in ('refresh_token','sync_history','sync_metrics'):
+        monkeypatch.setattr(ig,name,lambda:None)
+    monkeypatch.setattr(worker.media,'scan',lambda:0)
+    monkeypatch.setattr(worker.ai,'caption_pending',lambda:None)
+    sent=[]
+    monkeypatch.setattr(ig,'publish',lambda *args:sent.append(args) or '98765')
+    worker.tick()
+    assert row(job)['status']=='published' and row(job)['post_now_at'] is None
+    assert row(other)['status']=='queued' and len(sent)==1
+
 def test_ambiguous_publish_never_blind_retries(job,monkeypatch):
     calls=[]
     def fail(*a):calls.append(a);raise TimeoutError()

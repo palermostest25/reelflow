@@ -31,7 +31,7 @@ def worker_lock():
 def finish(job, media_id=None):
     now = time.time()
     with connect(True) as db:
-        db.execute("UPDATE jobs SET status='published',media_id=?,published_at=?,error='' WHERE id=?",(media_id,now,job['id']))
+        db.execute("UPDATE jobs SET status='published',media_id=?,published_at=?,error='',post_now_at=NULL WHERE id=?",(media_id,now,job['id']))
         if media_id:
             db.execute("INSERT OR IGNORE INTO history(media_id,caption,media_type,timestamp,origin,lane) VALUES(?,?,'REELS',?,'reelflow',?)",(media_id,job['caption'],now,job['lane']))
         event('Published '+job['lane']+' Reel.',job_id=job['id'],db=db)
@@ -51,12 +51,34 @@ def mark_uncertain(job, message):
         event(message,'error',job['id'],db)
     ntfy.enqueue('uncertain:'+str(job['id']),message+' Open Reelflow and reconcile this post.')
 
-def advance(job_id, now):
+def publish_limit(db, s, job, now, manual=False):
+    start = datetime.fromtimestamp(now,ZoneInfo(s['timezone'])).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
+    recent = db.execute("SELECT COUNT(*) FROM jobs WHERE lane=? AND status='published' AND published_at>=?",(job['lane'],start)).fetchone()[0]
+    stock_lane = 'main' if daily_limit(s,'main') else 'trial'
+    remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane=? AND (j.status IN ('queued','retry') OR (j.id=? AND j.status='processing')) AND c.disabled=0",(stock_lane,job['id'] if manual else -1)).fetchone()[0]
+    if recent >= daily_limit(s,job['lane'],conservation(s,remaining,now)):
+        return 'Daily publishing limit reached for this destination.'
+    if manual:
+        gap = 20*3600 if job['lane']=='main' else 5400
+        if db.execute("SELECT 1 FROM jobs WHERE status='published' AND ((lane=? AND published_at>?) OR (clip_id=? AND published_at>?))",(job['lane'],now-gap,job['clip_id'],now-s['min_gap_days']*86400)).fetchone():
+            return 'A recent Reel is too close. Wait for the posting gap before trying again.'
+    return ''
+
+def advance(job_id, now, *, manual_only=False):
     with connect() as db:
         job = db.execute('SELECT j.*,c.disabled,c.media_version,c.status AS clip_status FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
         account = db.execute('SELECT * FROM account WHERE id=1').fetchone()
     s = settings()
-    if s['paused'] or s['dry_run'] or c.DEMO or not account or not job or job['disabled'] or job['clip_status']!='ready':
+    manual = job['post_now_at'] if job else None
+    if manual_only and not manual:
+        return
+    if manual and now-manual>3600 and job['status'] in ('queued','retry','processing'):
+        with connect(True) as db:
+            message = 'Post now expired before Instagram accepted the Reel. Review the post before retrying.'
+            if db.execute("UPDATE jobs SET status='failed',error=?,post_now_at=NULL WHERE id=? AND post_now_at=? AND status IN ('queued','retry','processing')",(message,job_id,manual)).rowcount:
+                event(message,'warning',job_id,db)
+        return
+    if (s['paused'] and not manual) or s['dry_run'] or c.DEMO or not account or not job or job['disabled'] or job['clip_status']!='ready':
         return
     if account['expires_at'] <= now:
         ntfy.enqueue('auth-expired','Instagram connection expired. Reconnect in Settings.')
@@ -65,7 +87,7 @@ def advance(job_id, now):
         return
     if not daily_limit(s,job['lane']):
         return
-    if not job['approved']:
+    if not job['approved'] and not manual:
         return
     if not c.PUBLIC_URL.startswith('https://'):
         ntfy.enqueue('https-required','Set a public HTTPS URL. Instagram must be able to retrieve the signed footage URL.')
@@ -102,30 +124,31 @@ def advance(job_id, now):
         if status in ('ERROR','EXPIRED'):
             raise ig.MetaError('Instagram could not process this Reel container. Check the clip and Trial eligibility.')
         if status!='FINISHED':
-            if now-(job['scheduled_at'] or now)>3600:
+            if now-(manual or job['scheduled_at'] or now)>3600:
                 raise ig.MetaError('Instagram media processing exceeded an hour. Review this post.')
             return
         # Recheck pause/approval after upload before the external publish boundary.
         with connect(True) as db:
             fresh = db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
             current = settings(db)
-            disabled = db.execute('SELECT disabled FROM clips WHERE id=?',(job['clip_id'],)).fetchone()[0]
-            if disabled:
+            clip = db.execute('SELECT disabled,status,media_version FROM clips WHERE id=?',(job['clip_id'],)).fetchone()
+            if clip['disabled'] or clip['status']!='ready' or clip['media_version']<media.MEDIA_VERSION:
                 return
             if not daily_limit(current,job['lane']):
                 return
-            if current['paused'] or current['dry_run'] or not fresh['approved'] or fresh['status'] not in ('processing','retry','queued'):
+            requested = fresh['post_now_at']
+            if (current['paused'] and not requested) or current['dry_run'] or (not fresh['approved'] and not requested) or fresh['status'] not in ('processing','retry','queued'):
                 return
             if fresh['caption'] != job['caption']:
                 db.execute("UPDATE jobs SET container_id=NULL,status='queued' WHERE id=?",(job_id,))
                 return
-            # Stale jobs roll forward via replanning; don't burst catch-up posts.
-            start = datetime.fromtimestamp(now,ZoneInfo(current['timezone'])).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
-            recent = db.execute("SELECT COUNT(*) FROM jobs WHERE lane=? AND status='published' AND published_at>=?",(job['lane'],start)).fetchone()[0]
-            stock_lane = 'main' if daily_limit(current,'main') else 'trial'
-            remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane=? AND j.status IN ('queued','retry') AND c.disabled=0",(stock_lane,)).fetchone()[0]
-            cap = daily_limit(current,job['lane'],conservation(current,remaining,now))
-            if recent >= cap:
+            publish_time = time.time() if requested else now
+            blocked = ('Post now expired before Instagram accepted the Reel.' if requested and publish_time-requested>3600
+                       else publish_limit(db,current,fresh,publish_time,bool(requested)))
+            if blocked:
+                if requested:
+                    db.execute("UPDATE jobs SET status='failed',error=?,post_now_at=NULL WHERE id=?",(blocked,job_id))
+                    event(blocked,'warning',job_id,db)
                 return
             db.execute("UPDATE jobs SET status='publishing',publish_started=? WHERE id=?",(now,job_id))
         try:
@@ -152,6 +175,11 @@ def advance(job_id, now):
                 db.execute("UPDATE jobs SET status=?,attempts=?,next_attempt=?,error='Connection interrupted before publishing. Check the connection and retry after fixing it.' WHERE id=? AND status!='published'",('failed' if attempts>=5 else 'retry',attempts,now+min(3600,60*2**attempts),job_id))
         ntfy.enqueue('post-connection:'+str(job_id),'A Reel encountered a connection or storage problem. Check Reelflow Activity before retrying.')
 
+def send_post_now(job_id):
+    with worker_lock() as owned:
+        if owned:
+            advance(job_id,time.time(),manual_only=True)
+
 def tick():
     with worker_lock() as owned:
         if not owned:
@@ -159,7 +187,9 @@ def tick():
         runtime('heartbeat',time.time())
         # Recovery comes before planning: unresolved publishes must occupy their slots.
         with connect() as db:
-            recover = [r[0] for r in db.execute("SELECT id FROM jobs WHERE status IN ('publishing','uncertain','processing')")]
+            recover = [r[0] for r in db.execute("""SELECT id FROM jobs WHERE status IN ('publishing','uncertain','processing')
+                OR (post_now_at IS NOT NULL AND status IN ('queued','retry') AND next_attempt<=?)
+                ORDER BY CASE WHEN status IN ('publishing','uncertain') THEN 0 WHEN post_now_at IS NOT NULL THEN 1 ELSE 2 END,id""",(time.time(),))]
         for job_id in recover:
             advance(job_id,time.time())
         if not c.DEMO:

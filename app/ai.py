@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import httpx
 from . import config as c
 from .db import connect, settings, secret, event, runtime
+from .media import REBUILD_REQUESTED
 
 class CaptionError(Exception):
     def __init__(self, message, retry_after=1800):
@@ -176,7 +177,7 @@ def caption_pending():
         return
     s = settings()
     with connect() as db:
-        clips = db.execute("SELECT * FROM clips WHERE status IN ('captioning','needs_caption') LIMIT 6").fetchall()
+        clips = db.execute("SELECT * FROM clips WHERE status IN ('captioning','needs_caption') AND media_version!=? LIMIT 6",(REBUILD_REQUESTED,)).fetchall()
     for clip in clips:
         try:
             caption, category = generate(clip,s)

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  scheduled_at REAL, caption TEXT NOT NULL DEFAULT '', approved INTEGER DEFAULT 1,
  pinned INTEGER DEFAULT 0, caption_locked INTEGER DEFAULT 0, reason TEXT DEFAULT '',
  container_id TEXT, media_id TEXT, permalink TEXT, attempts INTEGER DEFAULT 0,
- next_attempt REAL DEFAULT 0, publish_started REAL, published_at REAL, error TEXT DEFAULT '',
+ next_attempt REAL DEFAULT 0, publish_started REAL, published_at REAL, error TEXT DEFAULT '', post_now_at REAL,
  UNIQUE(clip_id,lane)
 );
 CREATE INDEX IF NOT EXISTS queue_due ON jobs(status,scheduled_at);
@@ -62,6 +62,8 @@ def init():
     with connect(True) as db:
         if not any(row['name']=='media_version' for row in db.execute('PRAGMA table_info(clips)')):
             db.execute('ALTER TABLE clips ADD COLUMN media_version INTEGER NOT NULL DEFAULT 0')
+        if not any(row['name']=='post_now_at' for row in db.execute('PRAGMA table_info(jobs)')):
+            db.execute('ALTER TABLE jobs ADD COLUMN post_now_at REAL')
         db.execute('INSERT OR IGNORE INTO settings VALUES(1,?)', (json.dumps(c.DEFAULTS),))
 
 def settings(db=None):

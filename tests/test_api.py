@@ -6,7 +6,7 @@ from app import config as c
 from app.db import connect,secret
 from app.planner import plan
 from app.security import media_url
-from conftest import seed
+from conftest import seed, connected, set_settings
 
 @pytest.fixture
 def client():
@@ -16,6 +16,44 @@ def auth(client):
     assert client.post('/api/login',json={'password':c.PASSWORD}).status_code==200
     token=client.get('/api/state').json()['csrf']
     return {'x-csrf-token':token}
+
+def test_library_wide_caption_selection_and_rebuild(client):
+    from app import media
+    h=auth(client)
+    ready=seed(52)
+    [failed]=seed(1,status='error',prefix='failed')
+    with connect(True) as db:
+        db.execute("INSERT INTO jobs(clip_id,lane,status,caption,published_at) VALUES(?,'main','published','Published caption',?)",(ready[0],time.time()))
+    assert {r['id'] for r in client.get('/api/clips/caption-selection').json()}==set(ready)
+    assert client.post('/api/clips/rebuild').status_code==403
+    assert client.post('/api/clips/rebuild',headers=h).json()=={'count':53}
+    assert client.get('/api/clips/caption-selection').json()==[]
+    assert client.get('/api/state').json()['rebuilding']==53
+    with connect() as db:
+        assert tuple(db.execute('SELECT status,caption,media_version FROM clips WHERE id=?',(ready[0],)).fetchone())==('ready','A caption for this real footage.',media.REBUILD_REQUESTED)
+        assert db.execute('SELECT status FROM clips WHERE id=?',(failed,)).fetchone()[0]=='processing'
+        assert tuple(db.execute('SELECT status,caption FROM jobs').fetchone())==('published','Published caption')
+
+def test_post_now_requires_live_mode_and_queues_only_the_chosen_post(client,monkeypatch):
+    from app import main, media
+    h=auth(client)
+    seed(2)
+    connected()
+    set_settings(paused=True,require_approval=True,conserve=False)
+    plan()
+    with connect(True) as db:
+        db.execute('UPDATE clips SET media_version=?',(media.MEDIA_VERSION,))
+        first, second = [r['id'] for r in db.execute("SELECT id FROM jobs WHERE lane='main' ORDER BY id")]
+    sent=[]
+    monkeypatch.setattr(main,'send_post_now',sent.append)
+    assert client.post(f'/api/jobs/{first}/post-now',headers=h).status_code==409
+    set_settings(dry_run=False)
+    assert client.post(f'/api/jobs/{first}/post-now',headers=h).status_code==200
+    assert client.post(f'/api/jobs/{second}/post-now',headers=h).status_code==409
+    assert sent==[first]
+    assert client.get('/api/state').json()['settings']['paused'] is True
+    with connect() as db:
+        assert [tuple(r) for r in db.execute('SELECT id,approved FROM jobs WHERE post_now_at IS NOT NULL')]==[(first,0)]
 
 def test_auth_csrf_and_login_rate_limit(client):
     assert client.get('/api/state').status_code==401

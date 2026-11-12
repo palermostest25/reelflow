@@ -20,8 +20,8 @@ from . import config as c
 from .db import init, connect, settings, secret, event, runtime
 from .planner import plan, conservation, daily_limit, runway_days
 from .security import verify_media
-from . import instagram as ig, ai, notifications as ntfy
-from .worker import tick, finish
+from . import instagram as ig, ai, media, notifications as ntfy
+from .worker import tick, finish, publish_limit, send_post_now
 
 # Set the shared installation key before constructing session middleware.
 c.bootstrap_runtime()
@@ -117,6 +117,7 @@ def state(request: Request):
     with connect() as db:
         account = db.execute('SELECT username,expires_at,synced_at FROM account WHERE id=1').fetchone()
         counts = {r['status']:r['n'] for r in db.execute('SELECT status,COUNT(*) n FROM clips GROUP BY status')}
+        rebuilding = db.execute("SELECT COUNT(*) FROM clips WHERE media_version=? AND status!='error'",(media.REBUILD_REQUESTED,)).fetchone()[0]
         remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane='main' AND j.status IN ('queued','retry') AND c.disabled=0").fetchone()[0]
         trial_remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane='trial' AND j.status IN ('queued','retry') AND c.disabled=0").fetchone()[0]
         published = db.execute("SELECT COUNT(*) FROM jobs WHERE status='published'").fetchone()[0]
@@ -125,7 +126,7 @@ def state(request: Request):
         next_post = db.execute("SELECT j.*,c.name FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry','processing') AND j.scheduled_at IS NOT NULL AND c.disabled=0 ORDER BY j.scheduled_at LIMIT 1").fetchone()
         metric_count = db.execute("SELECT COUNT(*) FROM history WHERE origin='reelflow' AND reach>0 AND metrics_at>timestamp+86400").fetchone()[0]
     interval = conservation(s,remaining if daily_limit(s,'main') else trial_remaining,time.time())
-    return {'settings':s,'account':dict(account) if account else None,'counts':counts,'main_remaining':remaining,'trial_remaining':trial_remaining,
+    return {'settings':s,'account':dict(account) if account else None,'counts':counts,'rebuilding':rebuilding,'main_remaining':remaining,'trial_remaining':trial_remaining,
             'runway_days':runway_days(s,remaining,trial_remaining,interval),'interval':interval,'published':published,'imported':imported,'issues':issues,
             'next_post':dict(next_post) if next_post else None,'heartbeat':runtime('heartbeat'),
             'csrf':request.session.get('csrf',''),'demo':c.DEMO,'meta_configured':bool(c.META_ID and c.META_SECRET),
@@ -182,7 +183,21 @@ def clips(offset: int=0, limit: int=100):
     if offset<0 or not 1<=limit<=200:
         raise HTTPException(422,'Invalid page.')
     with connect() as db:
-        return [dict(r) for r in db.execute('SELECT id,name,created_at,duration,status,error,notes,caption,caption_source,category,disabled FROM clips ORDER BY created_at DESC LIMIT ? OFFSET ?',(limit,offset))]
+        return [dict(r) for r in db.execute("""SELECT id,name,created_at,duration,status,error,notes,caption,caption_source,category,disabled,
+            (media_version=? AND status!='error') AS rebuilding FROM clips ORDER BY created_at DESC,id LIMIT ? OFFSET ?""",(media.REBUILD_REQUESTED,limit,offset))]
+
+@app.get('/api/clips/caption-selection')
+def caption_selection():
+    with connect() as db:
+        return [dict(r) for r in db.execute("SELECT id,name FROM clips WHERE status IN ('ready','captioning','needs_caption') AND media_version!=? ORDER BY created_at DESC,id",(media.REBUILD_REQUESTED,))]
+
+@app.post('/api/clips/rebuild')
+def rebuild_clips():
+    with connect(True) as db:
+        count = db.execute("UPDATE clips SET media_version=?,status=CASE WHEN status='error' THEN 'processing' ELSE status END,error=''",(media.REBUILD_REQUESTED,)).rowcount
+        if count:
+            event(f'Rebuild queued for {count} clips. Original footage and posting history are kept.',db=db)
+    return {'count':count}
 
 @app.get('/api/events')
 def events(offset: int=0, limit: int=100):
@@ -358,6 +373,35 @@ class JobAction(BaseModel):
     action: str
     media_id: str = ''
 
+@app.post('/api/jobs/{job_id}/post-now')
+def post_now(job_id: int, background: BackgroundTasks):
+    now = time.time()
+    with connect(True) as db:
+        s = settings(db)
+        job = db.execute('SELECT j.*,c.disabled,c.status AS clip_status,c.media_version FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
+        if not job:
+            raise HTTPException(404,'Post not found.')
+        if c.DEMO or s['dry_run']:
+            raise HTTPException(409,'Turn off Dry run before posting live.')
+        if job['status'] not in ('queued','retry') or job['post_now_at']:
+            raise HTTPException(409,'This post is already being sent or is no longer ready.')
+        if job['disabled'] or job['clip_status']!='ready' or job['media_version']<media.MEDIA_VERSION or not job['caption'].strip():
+            raise HTTPException(409,'This Reel needs a ready export and a saved caption.')
+        if not daily_limit(s,job['lane']):
+            raise HTTPException(409,'This posting destination is switched off in Settings.')
+        account = db.execute('SELECT expires_at FROM account WHERE id=1').fetchone()
+        if not account or account['expires_at']<=now or not c.PUBLIC_URL.startswith('https://'):
+            raise HTTPException(409,'Connect Instagram and configure public HTTPS before posting.')
+        if db.execute("SELECT 1 FROM jobs WHERE post_now_at IS NOT NULL AND status IN ('queued','retry','processing','publishing')").fetchone():
+            raise HTTPException(409,'Another Post now request is in progress. Check Activity.')
+        blocked = publish_limit(db,s,job,now,manual=True)
+        if blocked:
+            raise HTTPException(409,blocked)
+        db.execute("UPDATE jobs SET post_now_at=?,next_attempt=0,error='' WHERE id=?",(now,job_id))
+        event('Post now requested for '+job['lane']+' Reel.',job_id=job_id,db=db)
+    background.add_task(send_post_now,job_id)
+    return {'ok':True}
+
 @app.post('/api/jobs/{job_id}/action')
 def job_action(job_id: int, body: JobAction):
     with connect(True) as db:
@@ -365,17 +409,17 @@ def job_action(job_id: int, body: JobAction):
         if not job:
             raise HTTPException(404,'Post not found.')
         if body.action=='reject' and job['status'] in ('queued','retry','failed'):
-            db.execute("UPDATE jobs SET status='rejected',scheduled_at=NULL WHERE id=?",(job_id,))
+            db.execute("UPDATE jobs SET status='rejected',scheduled_at=NULL,post_now_at=NULL WHERE id=?",(job_id,))
         elif body.action=='restore' and job['status']=='rejected':
             db.execute("UPDATE jobs SET status='queued',container_id=NULL,pinned=0 WHERE id=?",(job_id,))
         elif body.action=='retry' and job['status']=='failed':
-            db.execute("UPDATE jobs SET status='queued',container_id=NULL,attempts=0,error='',pinned=0,next_attempt=0 WHERE id=?",(job_id,))
+            db.execute("UPDATE jobs SET status='queued',container_id=NULL,attempts=0,error='',pinned=0,next_attempt=0,post_now_at=NULL WHERE id=?",(job_id,))
         elif body.action=='confirm_not_posted' and job['status']=='uncertain':
-            db.execute("UPDATE jobs SET status='queued',container_id=NULL,attempts=0,error='',pinned=0,next_attempt=0 WHERE id=?",(job_id,))
+            db.execute("UPDATE jobs SET status='queued',container_id=NULL,attempts=0,error='',pinned=0,next_attempt=0,post_now_at=NULL WHERE id=?",(job_id,))
         elif body.action=='confirm_posted' and job['status']=='uncertain':
             if body.media_id and not re.fullmatch(r'\d{5,40}',body.media_id):
                 raise HTTPException(422,'Instagram media ID must be numeric.')
-            db.execute("UPDATE jobs SET status='published',media_id=?,published_at=?,error='' WHERE id=?",(body.media_id or None,time.time(),job_id))
+            db.execute("UPDATE jobs SET status='published',media_id=?,published_at=?,error='',post_now_at=NULL WHERE id=?",(body.media_id or None,time.time(),job_id))
             if body.media_id:
                 db.execute("INSERT OR IGNORE INTO history(media_id,caption,media_type,timestamp,origin,lane) VALUES(?,?,'REELS',?,'reelflow',?)",(body.media_id,job['caption'],time.time(),job['lane']))
         else:
@@ -422,7 +466,7 @@ class CaptionRewrite(BaseModel):
 def regenerate(clip_id: str, body: CaptionRewrite = None):
     with connect() as db:
         clip = db.execute('SELECT * FROM clips WHERE id=?',(clip_id,)).fetchone()
-    if not clip or clip['status'] in ('processing','error'):
+    if not clip or clip['media_version']==media.REBUILD_REQUESTED or clip['status'] in ('processing','error'):
         raise HTTPException(409,'Wait for footage processing to finish first.')
     s = settings()
     if body and body.instructions.strip():
@@ -433,7 +477,8 @@ def regenerate(clip_id: str, body: CaptionRewrite = None):
     except ai.CaptionError as exc:
         raise HTTPException(502,str(exc))
     with connect(True) as db:
-        db.execute("UPDATE clips SET caption=?,category=?,status='ready',error='',caption_source=? WHERE id=?",(caption,category,s['ai_model'],clip_id))
+        if db.execute("UPDATE clips SET caption=?,category=?,status='ready',error='',caption_source=? WHERE id=? AND media_version!=? AND status IN ('ready','captioning','needs_caption')",(caption,category,s['ai_model'],clip_id,media.REBUILD_REQUESTED)).rowcount!=1:
+            raise HTTPException(409,'Wait for footage processing to finish first.')
         db.execute("UPDATE jobs SET caption=?,container_id=NULL WHERE clip_id=? AND caption_locked=0 AND status IN ('queued','retry')",(caption,clip_id))
         event('Caption regenerated for '+clip['name'],db=db)
     runtime('caption_retry_at',0)

@@ -58,6 +58,7 @@ async function render(){
   if(version!==renderVersion)return;
   records=clips;html=header('The source material.','Drop footage in your watched folder, or upload it here. We’ll take it from there.',`<button class="button" data-action="scan">${icon('refresh')}Scan folder</button>${uploadButton}`);
   html+=`<div class="notice"><p>Watching <code>${esc(state.footage_path)}</code>. Files are deduplicated by content. Originals in this folder are never modified.</p></div>`;
+  html+=`<div class="rebuild-tools"><button type="button" class="button" data-action="rebuild-clips">${icon('refresh')}Rebuild all videos</button><p class="help">${state.rebuilding?`${state.rebuilding} video${state.rebuilding===1?'':'s'} waiting to rebuild or being rebuilt. Check Activity for results.`:'Recreate the exports from the originals. Captions and posting history stay in place.'}</p></div>`;
   html+=captionTools();
   html+=records.length?`<div class="footage-grid">${records.map(clipCard).join('')}</div>`+pager(records.length):empty('Start with the good stuff.','Set your watched folder in Docker, then drop in your clips. Or upload a few here to try the workflow.',uploadButton);
   html+=`<div id="drop-zone" class="drop-zone">${icon('upload')}<strong>Drop footage here</strong><p>MP4, MOV, M4V, MKV or WebM · up to 5 GB per input</p><button class="button small" data-action="upload">Browse files</button><p id="upload-progress" role="status"></p></div>`;
@@ -80,7 +81,7 @@ async function render(){
  $('#content').innerHTML=html;icons();bindForms();
 }
 function scheduleControls(){const s={...state.settings,...scheduleDraft};return `<form id="schedule-form" class="schedule-controls"><label>Preview days<input name="preview_days" type="number" min="1" max="90" required value="${s.preview_days}"></label><label>Trial Reels / day<input name="trials_per_day" type="number" min="0" max="10" required value="${s.trials_per_day}"></label><label>Grid Reels / day<input name="main_per_day" type="number" min="0" max="10" required value="${s.main_per_day}"></label><button class="primary" type="submit">${icon('clock')}Save & build schedule</button><a href="#settings" class="text-button">Timing & caption options</a><p>Set either daily count to 0 to stop that destination. Building the schedule does not resume publishing.${state.settings.trials_enabled?'':' Trial publishing is also switched off in Settings.'}</p></form>`;}
-function schedulePost(j){const off=j.lane==='main'?!state.settings.main_per_day:!state.settings.trials_enabled||!state.settings.trials_per_day;const status=j.status==='published'?'Published':off?'Destination switched off':!j.approved?'Needs approval':({queued:'Ready',retry:'Retry pending',processing:'Preparing to publish',publishing:'Publishing',uncertain:'Check Instagram',failed:'Needs attention'}[j.status]||j.status);return `<button type="button" class="schedule-post" data-job="${j.id}" aria-label="Review ${esc(j.name)}, ${j.lane==='main'?'grid':'Trial'} Reel at ${clock(j.published_at||j.scheduled_at)}"><time>${clock(j.published_at||j.scheduled_at)}</time><img src="/api/preview/${j.clip_id}" alt="" loading="lazy"><span class="schedule-post-copy"><strong>${esc(j.name)}</strong><span class="schedule-caption">${esc(j.caption)}</span><span class="schedule-status ${j.error||!j.approved?'attention':''}">${esc(status)}${j.pinned?' · Time pinned':''}</span></span>${icon('edit')}</button>`;}
+function schedulePost(j){const off=j.lane==='main'?!state.settings.main_per_day:!state.settings.trials_enabled||!state.settings.trials_per_day;const status=j.status==='published'?'Published':postingNow(j)?'Post now requested':off?'Destination switched off':!j.approved?'Needs approval':({queued:'Ready',retry:'Retry pending',processing:'Preparing to publish',publishing:'Publishing',uncertain:'Check Instagram',failed:'Needs attention'}[j.status]||j.status);return `<button type="button" class="schedule-post" data-job="${j.id}" aria-label="Review ${esc(j.name)}, ${j.lane==='main'?'grid':'Trial'} Reel at ${clock(j.published_at||j.scheduled_at)}"><time>${clock(j.published_at||j.scheduled_at)}</time><img src="/api/preview/${j.clip_id}" alt="" loading="lazy"><span class="schedule-post-copy"><strong>${esc(j.name)}</strong><span class="schedule-caption">${esc(j.caption)}</span><span class="schedule-status ${j.error||!j.approved?'attention':''}">${esc(status)}${j.pinned?' · Time pinned':''}</span></span>${icon('edit')}</button>`;}
 function scheduleView(data){return `<p class="schedule-summary">${data.totals.trial} Trial${data.totals.trial===1?'':'s'} and ${data.totals.main} grid Reel${data.totals.main===1?'':'s'} planned across ${data.days.length} day${data.days.length===1?'':'s'}. All times in ${esc(data.timezone)}.</p>${data.preparing||data.unscheduled||data.overdue?`<div class="notice"><p>${data.preparing?`${data.preparing} clip${data.preparing===1?' is':'s are'} still preparing or waiting for a caption. `:''}${data.unscheduled?`${data.unscheduled} post${data.unscheduled===1?' has':'s have'} no slot yet, including switched-off destinations. `:''}${data.overdue?`${data.overdue} older post${data.overdue===1?' needs':'s need'} review in the post list. `:''}Only posts with assigned times appear below.</p></div>`:''}${data.days.map(d=>`<section class="schedule-day" aria-label="Day ${d.number}, ${day(d.timestamp)}"><div class="schedule-day-heading"><h3>Day ${d.number}<span>${day(d.timestamp)}</span></h3><span>${d.trial.length} Trial${d.trial.length===1?'':'s'} · ${d.main.length} grid</span></div><div class="schedule-lanes">${['trial','main'].map(lane=>`<div class="schedule-lane"><div class="schedule-lane-heading">${laneTag(lane)}<span>${lane==='trial'?'Non-followers first':'Profile grid + feed'}</span></div>${d[lane].length?d[lane].map(schedulePost).join(''):`<p class="schedule-empty">${data.limits[lane]?`No ${lane==='trial'?'Trial':'grid'} Reels scheduled.`:'This destination is switched off.'}</p>`}</div>`).join('')}</div></section>`).join('')}<p class="help">Daily counts are limits, not filler. Available footage, captions, same-clip spacing and conservation can leave gaps. Published posts today remain visible for context. Pinned times may exceed a daily target; the publisher still enforces the daily limit.</p>`;}
 function captionTools(){
  return `<details id="caption-guidance" class="caption-guidance" ${guidanceOpen?'open':''}>
@@ -97,6 +98,7 @@ function captionTools(){
   <div class="caption-actions">
    <strong id="caption-selected-count" aria-live="polite"></strong>
    <button type="button" class="button small" data-action="select-clips">Select page</button>
+   <button type="button" class="button small" data-action="select-all-clips">Select all clips</button>
    <button type="button" class="button small" data-action="clear-clips">Clear selection</button>
    <button type="button" class="primary small" data-action="regenerate-clips">${icon('spark')}Regenerate selected</button>
   </div>
@@ -111,12 +113,12 @@ function captionTools(){
   <p id="caption-progress" class="help" role="status"></p>
  </section>`;
 }
-function canRewrite(clip){return !['processing','error'].includes(clip.status);}
+function canRewrite(clip){return !clip.rebuilding&&!['processing','error'].includes(clip.status);}
 function clipCard(clip){
  const id=esc(clip.id), name=esc(clip.name);
- const status=clip.disabled?'Excluded':({ready:'Ready to rotate',captioning:'Writing caption',needs_caption:'Needs a caption',processing:'Preparing',error:'Needs attention'}[clip.status]||clip.status);
+ const status=clip.rebuilding?'Rebuilding video':clip.disabled?'Excluded':({ready:'Ready to rotate',captioning:'Writing caption',needs_caption:'Needs a caption',processing:'Preparing',error:'Needs attention'}[clip.status]||clip.status);
  return `<article class="clip-card">
-  <button class="clip-poster" data-clip="${id}" aria-label="Review ${name}">${canRewrite(clip)?`<img src="/api/preview/${id}" alt="" loading="lazy">`:icon('film')}${badge(status,clip.status==='ready'&&!clip.disabled?'green':'rust')}<span class="clip-duration">${Math.round(clip.duration)}s</span></button>
+  <button class="clip-poster" data-clip="${id}" aria-label="Review ${name}">${canRewrite(clip)?`<img src="/api/preview/${id}" alt="" loading="lazy">`:icon('film')}${badge(status,clip.status==='ready'&&!clip.disabled&&!clip.rebuilding?'green':'rust')}<span class="clip-duration">${Math.round(clip.duration)}s</span></button>
   <h3>${name}</h3><p class="clip-caption">${esc(clip.caption||clip.category||clip.caption_source||'Waiting for preparation')}</p>
   ${canRewrite(clip)?`<label class="clip-select"><input type="checkbox" data-caption-select="${id}" aria-label="Select ${name} for caption regeneration">Select</label>`:''}
  </article>`;
@@ -127,9 +129,11 @@ function captionControls(){
  const configured=state.ai_configured&&state.settings.ai_model;
  $('#caption-selected-count').textContent=`${count} selected`;
  $('[data-action="select-clips"]').disabled=captionBusy||!records.some(clip=>canRewrite(clip)&&!selectedClips.has(clip.id));
+ $('[data-action="select-all-clips"]').disabled=captionBusy||!!state.rebuilding||!['ready','captioning','needs_caption'].some(k=>state.counts[k]);
+ $('[data-action="rebuild-clips"]').disabled=captionBusy||!!state.rebuilding||!Object.values(state.counts).some(Boolean);
  $('[data-action="clear-clips"]').disabled=captionBusy||!count;
  $('[data-action="regenerate-clips"]').disabled=captionBusy||!count||guidanceDraft!==null||!configured;
- $('#caption-selection-help').textContent=guidanceDraft!==null?'Save your caption guidance before regenerating.':!configured?'Connect a caption provider and choose a model in Settings.':'Select prepared clips, then regenerate. Edited post captions and published posts are kept.';
+ $('#caption-selection-help').textContent=guidanceDraft!==null?'Save your caption guidance before regenerating.':!configured?'Connect a caption provider and choose a model in Settings.':state.rebuilding?'Wait for rebuilding to finish to select the whole library.':'Select prepared clips, then regenerate. Select all clips includes every page. Edited post captions and published posts are kept.';
  $('#caption-progress').textContent=captionProgress;
  $('#caption-progress').classList.toggle('caption-failed',captionFailed);
  const oneOff=$('#batch-guidance');
@@ -206,7 +210,8 @@ function bindCaptionTools(){
  captionControls();
 }
 function safeLink(url){try{const u=new URL(url);return ['https:','http:'].includes(u.protocol)?esc(u.href):'#';}catch{return '#';}}
-function jobRow(j){return `<article class="queue-row"><img class="thumb" src="/api/preview/${j.clip_id}" alt="" loading="lazy"><div class="row-info"><h3>${esc(j.name)}</h3><p>${esc(j.caption)}</p><div class="row-meta">${laneTag(j.lane)}<span>${j.status==='published'?'Published':j.status==='rejected'?'Rejected':j.disabled?'Clip excluded':!j.approved?'Awaiting approval':j.status==='queued'?'Ready to post':esc(j.status)}</span>${j.pinned?'<span>Time pinned</span>':''}${j.error?badge('Needs attention','rust'):''}</div></div><div class="post-time"><strong>${clock(j.published_at||j.scheduled_at)}</strong><span>${j.scheduled_at||j.published_at?day(j.published_at||j.scheduled_at):'Awaiting a slot'}</span></div><button class="icon-button" data-job="${j.id}" aria-label="Review post ${j.id}">${icon(j.status==='published'?'external':'edit')}</button></article>`;}
+function postingNow(j){return j.post_now_at&&['queued','retry','processing','publishing'].includes(j.status);}
+function jobRow(j){return `<article class="queue-row"><img class="thumb" src="/api/preview/${j.clip_id}" alt="" loading="lazy"><div class="row-info"><h3>${esc(j.name)}</h3><p>${esc(j.caption)}</p><div class="row-meta">${laneTag(j.lane)}<span>${j.status==='published'?'Published':j.status==='rejected'?'Rejected':postingNow(j)?'Post now requested':j.disabled?'Clip excluded':!j.approved?'Awaiting approval':j.status==='queued'?'Ready to post':esc(j.status)}</span>${j.pinned?'<span>Time pinned</span>':''}${j.error?badge('Needs attention','rust'):''}</div></div><div class="post-time"><strong>${clock(j.published_at||j.scheduled_at)}</strong><span>${j.scheduled_at||j.published_at?day(j.published_at||j.scheduled_at):'Awaiting a slot'}</span></div><button class="icon-button" data-job="${j.id}" aria-label="Review post ${j.id}">${icon(j.status==='published'?'external':'edit')}</button></article>`;}
 function setupStages(){return `<div class="setup-stage"><span class="stage-circle ${state.account?'done':''}">${state.account?icon('check'):'1'}</span><div><h3>Connect your Instagram</h3><p>Bring your account, previous captions and audience insights.</p></div><a href="#settings" class="button small">${state.account?'Connected':'Connect account'} ${icon('arrow')}</a></div><div class="setup-stage"><span class="stage-circle ${state.ai_configured?'done':''}">${state.ai_configured?icon('check'):'2'}</span><div><h3>Give the desk a voice</h3><p>Sign in with OpenRouter or connect an AI provider for short, footage-aware captions.</p></div><a href="#settings" class="button small">${state.ai_configured?'Configure model':'Set up captions'} ${icon('arrow')}</a></div><div class="setup-stage"><span class="stage-circle">3</span><div><h3>Add your source material</h3><p>Clips become regular and Trial Reels, mixed into a flexible running order.</p></div><button class="button small" data-action="upload">Add footage ${icon('arrow')}</button></div>`;}
 function field(name,title,type='text',help='',attrs=''){const val=state.settings[name];return `<label>${title}<input name="${name}" type="${type}" value="${esc(val)}" ${attrs}>${help?`<span>${help}</span>`:''}</label>`;}
 function toggle(name,title,help=''){return `<label class="toggle"><div>${title}${help?`<span>${help}</span>`:''}</div><input type="checkbox" name="${name}" ${state.settings[name]?'checked':''}></label>`;}
@@ -220,14 +225,34 @@ function bindForms(){
 async function busy(button,fn){if(button)button.disabled=true;try{await fn();}catch(e){toast(e.message,true);}finally{if(button)button.disabled=false;}}
 async function uploadFiles(files){for(let i=0;i<files.length;i++){const f=files[i];toast(`Uploading ${i+1}/${files.length}: ${f.name}`);const fd=new FormData();fd.append('file',f);try{await api('/api/upload','POST',fd);}catch(e){toast(e.message,true);return;}}toast('Footage uploaded. The worker will prepare settled files on its next pass.');location.hash='library';await refresh();}
 function chooseUpload(){let input=document.createElement('input');input.type='file';input.accept='.mp4,.mov,.m4v,.mkv,.webm';input.multiple=true;input.addEventListener('change',()=>uploadFiles(input.files));input.click();}
+function postNowControl(job){
+ if(postingNow(job))return '<p class="notice post-now-tools">Post now requested. Check Activity for the result.</p>';
+ if(!['queued','retry'].includes(job.status))return '';
+ const off=job.disabled||(job.lane==='main'?!state.settings.main_per_day:!state.settings.trials_enabled||!state.settings.trials_per_day);
+ const hint=state.settings.dry_run?'Turn off Dry run to post live.':off?'This clip or destination is switched off.':'Send this Reel with its saved caption, even while the automatic schedule is paused.';
+ return `<div class="post-now-tools"><button class="primary" type="button" data-post-now="${job.id}" ${off||state.settings.dry_run?'disabled':''}>Post now</button><p class="help">${hint}</p></div>`;
+}
 async function openJob(id){const job=records.find(r=>r.id===Number(id));if(!job)return;
  $('#editor-title').textContent=job.status==='published'?'Published Reel':'Review Reel';
  const editable=['queued','retry','failed'].includes(job.status);const local=job.scheduled_at?new Date(job.scheduled_at*1000):null;const localValue=local?new Date(local.getTime()-local.getTimezoneOffset()*60000).toISOString().slice(0,16):'';
- $('#editor-body').innerHTML=`<video class="editor-video" src="/api/preview/${job.clip_id}?video=true" poster="/api/preview/${job.clip_id}" controls playsinline preload="metadata"></video><p class="editor-name">${esc(job.name)} · ${laneTag(job.lane)} · Post #${job.id}</p><form id="job-form"><label class="field">Caption<textarea name="caption" maxlength="2200" ${editable?'':'readonly'}>${esc(job.caption)}</textarea></label>${editable?`<label class="field">Posting time (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)})<input type="datetime-local" name="scheduled_at" value="${localValue}"><span>Changing this pins the time. The queue displays ${esc(state.settings.timezone)}.</span></label><label class="toggle field"><span>Approved for automatic posting</span><input type="checkbox" name="approved" ${job.approved?'checked':''}></label><label class="toggle field"><span>Keep this posting time pinned</span><input type="checkbox" name="pinned" ${job.pinned?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save changes</button><button class="button danger" type="button" data-job-action="reject" data-id="${job.id}">Reject post</button></div>`:''}${job.error?`<p class="editor-error">${esc(job.error)}</p>`:''}${job.reason?`<p class="editor-help">${esc(job.reason)}</p>`:''}</form>${job.status==='failed'?`<div class="drawer-actions"><button class="button" data-job-action="retry" data-id="${job.id}">Retry after fixing</button></div>`:''}${job.status==='rejected'?`<button class="button" data-job-action="restore" data-id="${job.id}">Restore to queue</button>`:''}${job.status==='uncertain'?`<div class="notice"><p>Check the Instagram account before choosing. These actions resolve the duplicate-prevention hold.</p></div><label class="field">Instagram media ID (optional)<input id="resolved-media-id" inputmode="numeric"></label><div class="inline-actions"><button class="button" data-job-action="confirm_posted" data-id="${job.id}">I confirmed it posted</button><button class="button danger" data-job-action="confirm_not_posted" data-id="${job.id}">I confirmed it did not post</button></div>`:''}${job.permalink?`<a class="button" href="${safeLink(job.permalink)}" target="_blank" rel="noopener noreferrer">Open on Instagram ${icon('external')}</a>`:''}`;
+ $('#editor-body').innerHTML=`<video class="editor-video" src="/api/preview/${job.clip_id}?video=true" poster="/api/preview/${job.clip_id}" controls playsinline preload="metadata"></video><p class="editor-name">${esc(job.name)} · ${laneTag(job.lane)} · Post #${job.id}</p><form id="job-form"><label class="field">Caption<textarea name="caption" maxlength="2200" ${editable?'':'readonly'}>${esc(job.caption)}</textarea></label>${editable?`<label class="field">Posting time (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)})<input type="datetime-local" name="scheduled_at" value="${localValue}"><span>Changing this pins the time. The queue displays ${esc(state.settings.timezone)}.</span></label><label class="toggle field"><span>Approved for automatic posting</span><input type="checkbox" name="approved" ${job.approved?'checked':''}></label><label class="toggle field"><span>Keep this posting time pinned</span><input type="checkbox" name="pinned" ${job.pinned?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save changes</button><button class="button danger" type="button" data-job-action="reject" data-id="${job.id}">Reject post</button></div>`:''}${job.error?`<p class="editor-error">${esc(job.error)}</p>`:''}${job.reason?`<p class="editor-help">${esc(job.reason)}</p>`:''}</form>${postNowControl(job)}${job.status==='failed'?`<div class="drawer-actions"><button class="button" data-job-action="retry" data-id="${job.id}">Retry after fixing</button></div>`:''}${job.status==='rejected'?`<button class="button" data-job-action="restore" data-id="${job.id}">Restore to queue</button>`:''}${job.status==='uncertain'?`<div class="notice"><p>Check the Instagram account before choosing. These actions resolve the duplicate-prevention hold.</p></div><label class="field">Instagram media ID (optional)<input id="resolved-media-id" inputmode="numeric"></label><div class="inline-actions"><button class="button" data-job-action="confirm_posted" data-id="${job.id}">I confirmed it posted</button><button class="button danger" data-job-action="confirm_not_posted" data-id="${job.id}">I confirmed it did not post</button></div>`:''}${job.permalink?`<a class="button" href="${safeLink(job.permalink)}" target="_blank" rel="noopener noreferrer">Open on Instagram ${icon('external')}</a>`:''}`;
  $('#job-form')?.addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{const fd=new FormData(form);let data={caption:fd.get('caption'),approved:form.elements.approved.checked,pinned:form.elements.pinned.checked};if(fd.get('scheduled_at')!==localValue&&fd.get('scheduled_at'))data.scheduled_at=new Date(fd.get('scheduled_at')).getTime()/1000;await api('/api/jobs/'+job.id,'PATCH',data);$('#editor').close();toast('Post updated.');await refresh();});});
  $('#editor').showModal();
 }
-async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)return;$('#editor-title').textContent='Source material';$('#editor-body').innerHTML=`${clip.status==='processing'||clip.status==='error'?'<div class="empty-state">'+icon('film')+'</div>':`<video class="editor-video" src="/api/preview/${clip.id}?video=true" poster="/api/preview/${clip.id}" controls playsinline preload="metadata"></video>`}<p class="editor-name">${esc(clip.name)}</p><form id="clip-form"><label class="field">Facts & context<textarea name="notes" maxlength="3000" placeholder="Only facts the caption writer should know: venue, track, date, what is happening…">${esc(clip.notes)}</textarea></label><label class="field">Caption<textarea name="caption" maxlength="2200" placeholder="Write a caption, or connect AI in Settings.">${esc(clip.caption)}</textarea><span>Manual captions make prepared footage ready. Upcoming posts with edited captions keep their own version.</span></label><label class="toggle field"><span>Exclude this clip from future posting</span><input type="checkbox" name="disabled" ${clip.disabled?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save footage</button><button class="button" type="button" data-regenerate="${clip.id}">${icon('spark')}Rewrite caption</button></div>${clip.error?`<p class="editor-error">${esc(clip.error)}</p>`:''}${clip.status==='error'?`<button type="button" class="button" data-retry-clip="${clip.id}">Retry preparation</button>`:''}</form>`;$('#clip-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{let body={notes:form.elements.notes.value,disabled:form.elements.disabled.checked};if(form.elements.caption.value.trim())body.caption=form.elements.caption.value.trim();await api('/api/clips/'+clip.id,'PATCH',body);$('#editor').close();toast('Footage updated.');await refresh();});});$('#editor').showModal();}
+function clipExport(clip){
+ if(!canRewrite(clip))return `<div class="empty-state">${icon('film')}${clip.rebuilding?'<p>Rebuilding from the original footage. Check back when the export is ready.</p>':''}</div>`;
+ const url='/api/preview/'+encodeURIComponent(clip.id);
+ return `<video class="editor-video clip-export" src="${url}?video=true" poster="${url}" controls playsinline preload="metadata"></video>
+ <div class="clip-export-tools"><a class="button small" href="${url}?video=true" download="${esc(clip.name.replace(/\.[^.]+$/, '')+'.mp4')}">Download export</a><p class="help" id="clip-export-size">Video file sent to Instagram</p></div>`;
+}
+async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)return;$('#editor-title').textContent='Source material';$('#editor-body').innerHTML=`${clipExport(clip)}<p class="editor-name">${esc(clip.name)}</p><form id="clip-form"><label class="field">Facts & context<textarea name="notes" maxlength="3000" placeholder="Only facts the caption writer should know: venue, track, date, what is happening…">${esc(clip.notes)}</textarea></label><label class="field">Caption<textarea name="caption" maxlength="2200" placeholder="Write a caption, or connect AI in Settings.">${esc(clip.caption)}</textarea><span>Manual captions make prepared footage ready. Upcoming posts with edited captions keep their own version.</span></label><label class="toggle field"><span>Exclude this clip from future posting</span><input type="checkbox" name="disabled" ${clip.disabled?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save footage</button><button class="button" type="button" data-regenerate="${clip.id}" ${canRewrite(clip)?'':'disabled'}>${icon('spark')}Rewrite caption</button></div>${clip.error?`<p class="editor-error">${esc(clip.error)}</p>`:''}${clip.status==='error'?`<button type="button" class="button" data-retry-clip="${clip.id}">Retry preparation</button>`:''}</form>`;$('#clip-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{let body={notes:form.elements.notes.value,disabled:form.elements.disabled.checked};if(form.elements.caption.value.trim())body.caption=form.elements.caption.value.trim();await api('/api/clips/'+clip.id,'PATCH',body);$('#editor').close();toast('Footage updated.');await refresh();});});const video=$('#editor .clip-export');
+ if(video){
+  const label=$('#clip-export-size');
+  const size=()=>{if(video.videoWidth)label.textContent=`Export: ${video.videoWidth} × ${video.videoHeight}`;};
+  video.addEventListener('loadedmetadata',size);
+  size();
+ }
+ $('#editor').showModal();}
 $('#close-editor').addEventListener('click',()=>{$('#editor video')?.pause();$('#editor').close();});
 $('#editor').addEventListener('close',()=>$('#editor video')?.pause());
 $('#pause-button').addEventListener('click',e=>busy(e.currentTarget,async()=>{await api('/api/settings','PATCH',{values:{paused:!state.settings.paused}});await refresh();toast(state.settings.paused?'Publishing paused.':'Queue resumed'+(state.settings.dry_run?' in dry-run mode.':'.'));}));
@@ -242,6 +267,17 @@ document.addEventListener('click',async e=>{
  if(target.dataset.clip){await openClip(target.dataset.clip);return;}
  if(target.dataset.retryClip){await busy(target,async()=>{await api('/api/clips/'+target.dataset.retryClip+'/retry','POST');$('#editor').close();toast('Preparation will retry on the next worker pass.');await refresh();});return;}
  if(target.dataset.regenerate){if(captionBusy){toast('Wait for the caption operation to finish.');return;}await busy(target,async()=>{await api('/api/clips/'+target.dataset.regenerate+'/regenerate','POST');$('#editor').close();toast('A fresh caption is ready.');await refresh();});return;}
+ if(target.dataset.postNow){
+  const caption=$('#job-form textarea[name="caption"]');
+  if(caption&&caption.value.trim()!==caption.defaultValue.trim()){
+   toast('Save your caption changes before posting.',true);return;
+  }
+  await busy(target,async()=>{
+   await api('/api/jobs/'+target.dataset.postNow+'/post-now','POST');
+   $('#editor').close();toast('Post now requested. Check Activity for the result.');await refresh();
+  });
+  return;
+ }
  if(target.dataset.jobAction){await busy(target,async()=>{await api('/api/jobs/'+target.dataset.id+'/action','POST',{action:target.dataset.jobAction,media_id:$('#resolved-media-id')?.value||''});$('#editor').close();toast('Post state updated.');await refresh();});return;}
  const a=target.dataset.action;if(!a)return;
  if(a==='select-clips'||a==='clear-clips'){
@@ -249,6 +285,25 @@ document.addEventListener('click',async e=>{
   if(a==='clear-clips'){selectedClips.clear();batchGuidance='';}
   else records.filter(canRewrite).forEach(clip=>selectedClips.set(clip.id,clip.name));
   captionControls();return;
+ }
+ if(a==='select-all-clips'||a==='rebuild-clips'){
+  if(captionBusy)return;
+  captionBusy=true;captionControls();
+  try{
+   if(a==='select-all-clips'){
+    const clips=await api('/api/clips/caption-selection');
+    selectedClips.clear();
+    clips.forEach(clip=>selectedClips.set(clip.id,clip.name));
+    if(!clips.length)toast('No prepared clips are ready to rewrite yet.');
+   }else{
+    const {count}=await api('/api/clips/rebuild','POST');
+    selectedClips.clear();captionProgress='';
+    toast(count?`Queued ${count} video${count===1?'':'s'} to rebuild from the originals.`:'No videos to rebuild.');
+    await refresh();
+   }
+  }catch(err){toast(err.message,true);}
+  finally{captionBusy=false;captionControls();}
+  return;
  }
  if(a==='regenerate-clips'){await regenerateSelected();return;}
  if(a==='upload'){chooseUpload();return;}

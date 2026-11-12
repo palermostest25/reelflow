@@ -86,7 +86,7 @@ def plan(now=None):
         seed = run_day.isoformat()
         # Recompute all flexible jobs so a new intake batch is mingled, never just appended.
         for lane in ('main', 'trial'):
-            protected = {j['id'] for j in jobs if j['scheduled_at'] and now-1800 <= j['scheduled_at'] <= now+1800}
+            protected = {j['id'] for j in jobs if j['post_now_at'] or (j['scheduled_at'] and now-1800 <= j['scheduled_at'] <= now+1800)}
             pending = [j for j in jobs if j['lane'] == lane and not j['pinned'] and j['id'] not in protected]
             for j in pending:
                 db.execute('UPDATE jobs SET scheduled_at=NULL WHERE id=?',(j['id'],))
