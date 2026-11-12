@@ -97,6 +97,18 @@ def test_rewrite_rejects_angle_narration_and_applies_saved_signoff(monkeypatch,r
     assert 'draft was rejected' in requests[1]['messages'][0]['content']
 
 
+@pytest.mark.parametrize('draft', ['Trading off on the decks.', 'WE DO TAKE THIS SERIOUSLY! stv 🏴‍☠️'])
+def test_trades_is_a_name_and_recent_caption_bodies_cannot_repeat(monkeypatch,draft):
+    clip,s=clip_and_settings(monkeypatch)
+    s.update(brand_name='TRADES',caption_instructions='Always end with “stv” or “stv 🏴‍☠️”.')
+    with connect(True) as db:
+        db.execute("INSERT INTO history(media_id,caption) VALUES('12345','We do take this seriously. stv')")
+    monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
+    replies=iter([draft,'Normal behaviour from TRADES. Allegedly.'])
+    install_transport(monkeypatch,lambda request:httpx.Response(200,json=completion(next(replies))))
+    assert ai.generate(clip,s)[0]=='Normal behaviour from TRADES. Allegedly. stv'
+
+
 @pytest.mark.parametrize('content',[None,'',json.dumps({'caption':'Complete looking text.','category':'DJ performance'})])
 def test_length_completion_is_held_even_if_partial_content_looks_valid(content):
     with pytest.raises(ai.CaptionError,match='output limit'):
