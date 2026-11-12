@@ -16,7 +16,7 @@ def terminate_group(process, sig):
 
 
 def supervise(commands, grace=25):
-    """Stop both children on shutdown; exit failed if either unexpectedly dies."""
+    """Stop all children on shutdown and restart on an unexpected exit."""
     stopping = False
     children = []
     previous = {}
@@ -53,7 +53,7 @@ def supervise(commands, grace=25):
 
 
 def main():
-    # Finish database initialization before either child starts.
+    # Finish database initialization before the children start.
     from .db import init
     init()
     if not os.getenv('ADMIN_PASSWORD'):
@@ -62,6 +62,7 @@ def main():
     return supervise([
         ('Web UI', [sys.executable, '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8080', '--no-access-log', '--no-proxy-headers']),
         ('Posting worker', [sys.executable, '-m', 'app.worker']),
+        ('YouTube worker', [sys.executable, '-m', 'app.youtube']),
     ])
 
 

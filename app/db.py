@@ -36,6 +36,21 @@ CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER, mtime REA
 CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY, sent_at REAL, message TEXT, status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0, last_attempt REAL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS runtime (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS login_attempts (address TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0, since REAL);
+CREATE TABLE IF NOT EXISTS youtube_account (
+ id INTEGER PRIMARY KEY CHECK(id=1), channel_id TEXT NOT NULL, title TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS youtube_jobs (
+ id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('short','set')), source_key TEXT NOT NULL,
+ source_path TEXT NOT NULL DEFAULT '', source_name TEXT NOT NULL, duration REAL NOT NULL,
+ title TEXT NOT NULL, description TEXT NOT NULL, visibility TEXT NOT NULL, made_for_kids INTEGER NOT NULL, category TEXT NOT NULL,
+ created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'draft', scheduled_at REAL, pinned INTEGER NOT NULL DEFAULT 0,
+ manual INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', next_attempt REAL NOT NULL DEFAULT 0,
+ attempts INTEGER NOT NULL DEFAULT 0, source_stamp TEXT, total_bytes INTEGER NOT NULL DEFAULT 0,
+ uploaded_bytes INTEGER NOT NULL DEFAULT 0, video_id TEXT, uploaded_at REAL, actual_visibility TEXT,
+ UNIQUE(kind,source_key)
+);
+CREATE INDEX IF NOT EXISTS youtube_due ON youtube_jobs(status,scheduled_at);
+CREATE TABLE IF NOT EXISTS youtube_short_checks (clip_id TEXT PRIMARY KEY REFERENCES clips(id));
 '''
 
 @contextlib.contextmanager
@@ -87,15 +102,17 @@ def event(message, level='info', job_id=None, db=None):
         with connect(True) as conn:
             event(message, level, job_id, conn)
 
-def secret(name, value=None):
+def secret(name, value=None, *, db=None):
+    if db is None:
+        with connect(value is not None) as conn:
+            return secret(name,value,db=conn)
     from cryptography.fernet import Fernet
     cipher = Fernet(c.TOKEN_KEY.encode())
-    with connect(value is not None) as db:
-        if value is not None:
-            db.execute('INSERT OR REPLACE INTO secrets VALUES(?,?)', (name, cipher.encrypt(value.encode()).decode()))
-            return
-        row = db.execute('SELECT value FROM secrets WHERE name=?', (name,)).fetchone()
-        return cipher.decrypt(row[0].encode()).decode() if row else ''
+    if value is not None:
+        db.execute('INSERT OR REPLACE INTO secrets VALUES(?,?)', (name, cipher.encrypt(value.encode()).decode()))
+        return
+    row = db.execute('SELECT value FROM secrets WHERE name=?', (name,)).fetchone()
+    return cipher.decrypt(row[0].encode()).decode() if row else ''
 
 def runtime(key, value=None):
     with connect(value is not None) as db:

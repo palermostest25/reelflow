@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 import httpx
@@ -24,6 +25,7 @@ from .planner import plan, conservation, daily_limit, runway_days
 from .security import verify_media
 from . import instagram as ig, ai, media, notifications as ntfy
 from .worker import tick, send_post_now
+from .youtube_api import router as youtube_router
 
 # Set the shared installation key before constructing session middleware.
 c.bootstrap_runtime()
@@ -39,6 +41,7 @@ async def lifespan(app):
     yield
 
 app = FastAPI(title='Reelflow',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+app.include_router(youtube_router)
 
 @app.middleware('http')
 async def guard(request: Request, call_next):
@@ -328,13 +331,17 @@ def notification_test(background: BackgroundTasks):
     return {'ok':True,'message':'Test notification queued. Delivery appears in Activity.'}
 
 @app.post('/api/upload')
-async def upload(file: UploadFile):
+async def upload(file: UploadFile, destination: Literal['instagram','youtube']='instagram'):
     from .media import EXTENSIONS
     suffix = Path(file.filename or '').suffix.lower()
     if suffix not in EXTENSIONS:
         raise HTTPException(422,'Choose an MP4, MOV, M4V, MKV or WebM video.')
-    name = re.sub(r'[^\w .()-]','_',Path(file.filename).name)[:180]
-    dest = c.DATA/'uploads'/(secrets.token_hex(5)+'-'+name)
+    name = re.sub(r'[^\w .()-]','_',Path(file.filename).stem)[:170]+suffix
+    folder = c.DATA/'uploads'
+    if destination=='youtube':
+        folder /= media.YOUTUBE_SET_FOLDER
+        folder.mkdir(exist_ok=True)
+    dest = folder/(secrets.token_hex(5)+'-'+name)
     temp = dest.with_suffix('.part')
     size = 0
     try:

@@ -1,6 +1,6 @@
 # Reelflow
 
-**A self-hosted Instagram posting desk. Drop footage in a folder. Keep it on rotation.**
+**A self-hosted publishing desk for Instagram and YouTube.**
 
 Built for TRADES, the DJ duo; configurable for any artist, creator, or business. Reelflow imports the connected account's recent captions and available engagement rather than imposing a generic brand voice.
 
@@ -17,6 +17,7 @@ Start with [Docker deployment](#run-it-one-container-one-compose-file), follow t
 - Mixes new clips into flexible queue positions, avoids adjacent scene categories where practical, and keeps edited captions and pinned times intact. Default same-clip separation across lanes: one day, editable down to zero.
 - Starts with editable posting windows for every weekday. After at least five mature, same-weekday observations in a lane, smoothed engagement per reach guides time selection. Every fifth calendar date explores a window. These are experiments, not a promise of optimal reach.
 - Shows a queue, playable footage library, caption/time editor, approve/reject/restore actions, published history, metrics, errors, and a durable activity log.
+- Queues YouTube Shorts from eligible library clips and finished 20–30 minute videos from a separate watched subfolder. The YouTube page handles channel setup, drafts, metadata, visibility, approval, scheduling, upload progress and recovery.
 - Sends ntfy stock, shortage, connection and publishing alerts with delivery retries. Enter a "no new footage until" date in Settings. If your conservation pace cannot cover it, Reelflow tells you; it does not invent footage or recycle clips secretly.
 - Persists containers before publishing. A timeout or crash at the publish boundary produces a reconciliation hold; it does **not** trigger an automatic duplicate post.
 
@@ -32,7 +33,7 @@ Docker pulls the prebuilt `ghcr.io/palermostest25/reelflow:latest` image. GitHub
 
 Open [the local desk](http://localhost:8080), or port 8080 on your Docker host. Get the generated admin password with `docker compose logs reelflow`. Installation keys and your password persist alongside the database and media in the Docker volume. Optionally add `ADMIN_PASSWORD` to the same Compose environment mapping to choose your own password.
 
-The one container runs the web UI and posting worker together. A supervisor stops the container if either process exits; Docker restarts it. Compose exposes only port 8080 and contains no gateway, shared YAML blocks or healthchecks.
+The one container runs the web UI and both publishing workers. A supervisor stops the container if any process exits; Docker restarts it. Compose exposes only port 8080 and contains no gateway, shared YAML blocks or healthchecks.
 
 **Cloudflare Tunnel:** point your tunnel at `http://DOCKER-HOST:8080` and set `PUBLIC_URL` to its public `https://reels.example.com` address. The container uses HTTP; Cloudflare provides public HTTPS for Instagram login callbacks and signed video downloads. If the tunnel runs in another container, use a reachable host address or shared Docker network rather than that container's `localhost`. Allow Instagram to fetch signed `/media/*` URLs without an interactive Cloudflare Access challenge. The dashboard has its own login.
 
@@ -77,6 +78,17 @@ Choose **Higher detail** to encode new exports at a lower compression setting wi
 To send one Reel immediately, open its review panel under **Up next** and click **Post now**. Save any caption edits first. The request uses the chosen destination and saved caption, works while the automatic schedule is paused, and requires Dry run to be off. It overrides Reelflow’s automatic scheduling, destination and clip exclusions, posting gaps and daily targets. It still requires a ready export, valid Instagram access and duplicate protection. A successful manual post leaves the automatic cadence available, so flexible posts move forward and pinned times stay put. Check **Activity** for the result; Instagram may need time to process the video.
 
 To replace a Reel, open it under **Published**, use **Open on Instagram** to delete or archive it there, then choose **Remove & repost → I removed it — requeue**. Reelflow preserves the previous publication history and creates a new Instagram upload when you use **Post now** again. The requeued Reel needs explicit approval or a Post now request before it can publish.
+
+## YouTube Shorts and full sets
+
+1. Open **YouTube → Set up Google sign-in** in Reelflow. In [Google Cloud](https://console.cloud.google.com/apis/library/youtube.googleapis.com), enable **YouTube Data API v3** in your project. Configure the [Google Auth Platform](https://console.cloud.google.com/auth/overview) for your account. If the OAuth app is in Testing, add your Google account as a test user. Testing refresh tokens for YouTube scopes can expire after seven days.
+2. Under **Clients**, create a **Web application** and paste the exact redirect URI shown in Reelflow. It ends in `/auth/youtube/callback`. Copy the client ID and secret into the Reelflow form and choose **Save & connect Google**. Select the channel that should receive uploads. The app keeps the client secret, refresh token and active upload URLs encrypted in the existing data volume. [Google's OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server).
+3. For a Short, open a prepared clip in **Footage library → Create YouTube Short draft**, or enable automatic Short drafts under **Automation & defaults**. YouTube identifies Shorts from square or vertical uploads up to three minutes. Landscape footage stays in the Instagram workflow unless you supply a separate vertical or square export. [YouTube Shorts eligibility and music claims](https://support.google.com/youtube/answer/15424877).
+4. For a full set, create a `youtube-sets` subfolder in the watched footage folder on your NAS. Drop a finished 20–30 minute file there, or use **Add full set** in the browser. Use the folder for large videos and tunnel setups with request-size limits. Reelflow waits for the file to settle, deduplicates by content, and uploads the finished file as supplied. It does not edit or assemble the set. The YouTube channel must be [verified for videos longer than 15 minutes](https://support.google.com/youtube/answer/71673).
+5. Open a draft to check the title, description, category, audience, visibility and time. **Approve for schedule** puts it into the automatic queue. **Upload now** sends that item with its saved visibility, including when automatic uploads are paused. Start with a private upload and check the result in YouTube Studio before enabling public defaults.
+6. Use **Automation & defaults** to choose each format's schedule, whether new drafts are approved automatically, and a description footer for bookings or links. Choose **Resume automatic uploads** when ready. The Instagram pause and dry-run controls apply to Instagram. The YouTube page has its own pause control.
+
+YouTube uploads resume from the saved session after an interruption. If a session expires without a confirmed result, check **YouTube Studio** from the job's recovery menu before retrying. Published items retain their upload-time visibility and link to Studio, where you can check current visibility, processing and copyright claims. [YouTube's resumable upload protocol](https://developers.google.com/youtube/v3/guides/using_resumable_upload_protocol).
 
 ## First-time setup: Meta and Instagram
 

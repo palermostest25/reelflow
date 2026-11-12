@@ -16,8 +16,8 @@ from .security import media_url
 log = logging.getLogger('reelflow')
 
 @contextmanager
-def worker_lock():
-    with (c.DATA/'worker.lock').open('a') as lock:
+def worker_lock(name='worker.lock'):
+    with (c.DATA/name).open('a') as lock:
         try:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:

@@ -4,10 +4,11 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 const paths={list:'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',film:'M4 3h16v18H4zM4 7h16M4 17h16M8 3v4M16 3v4M8 17v4M16 17v4',check:'m5 12 4 4L19 6',chart:'M4 20V4M4 20h17M8 16v-4M13 16V8M18 16V5',activity:'M2 12h4l3-8 5 16 3-8h5',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M10 2h4l1 3 3 1 3 2-1 4 1 4-3 2-3 1-1 3h-4l-1-3-3-1-3-2 1-4-1-4 3-2 3-1z',pause:'M8 5v14M16 5v14',play:'m8 4 12 8-12 8z',plus:'M12 4v16M4 12h16',upload:'M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5',arrow:'M4 12h16m-6-6 6 6-6 6',refresh:'M20 7a9 9 0 1 0 1 8M20 2v5h-5',x:'M6 6l12 12M18 6 6 18',edit:'m4 16 12-12 4 4L8 20H4zM13 7l4 4',instagram:'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M17 7h.01',clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v5l3 2',spark:'m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',external:'M14 3h7v7M21 3 10 14M10 3H3v18h18v-7'};
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.film}"/></svg>`;
 function icons(){document.querySelectorAll('[data-icon]').forEach(el=>el.innerHTML=icon(el.dataset.icon));}
-let state, currentPage='', filter='all', offset=0, toastTimer, records=[], renderVersion=0, queueView='schedule', scheduleDraft=null;
+let state, currentPage='', filter='all', offset=0, toastTimer, toastTarget, records=[], renderVersion=0, queueView='schedule', scheduleDraft=null;
 const selectedClips=new Map();
 let guidanceDraft=null, guidanceOpen=false, batchGuidance='', captionBusy=false, captionProgress='', captionFailed=false;
-const titles={queue:'Up next',library:'Footage library',history:'Published',insights:'Audience & voice',activity:'Activity log',settings:'Settings'};
+let youtubeData, youtubeView='queue', youtubeOffset=0, youtubeFocus=null;
+const titles={queue:'Instagram',youtube:'YouTube',library:'Footage library',history:'Published',insights:'Audience & voice',activity:'Activity log',settings:'Settings'};
 async function api(path, method='GET', data){
  const headers={}; if(state?.csrf)headers['X-CSRF-Token']=state.csrf;
  if(data && !(data instanceof FormData))headers['Content-Type']='application/json';
@@ -15,7 +16,7 @@ async function api(path, method='GET', data){
  let body;try{body=await response.json();}catch{body={detail:'The server returned an unexpected response.'};}
  if(!response.ok){if(response.status===401&&path!='/api/login')showLogin();throw new Error(typeof body.detail==='string'?body.detail:'Check the values and try again.');}return body;
 }
-function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'error':'';el.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.hidden=true,error?9000:5000);}
+function toast(message,error=false){const el=$('#editor').open?$('#editor-feedback'):$('#toast');if(toastTarget&&toastTarget!==el)toastTarget.hidden=true;toastTarget=el;el.textContent=message;el.className=error?'error':'';el.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.hidden=true,error?9000:5000);}
 function date(ts,options={}){return ts?new Intl.DateTimeFormat('en-AU',{timeZone:state?.settings.timezone||'Australia/Perth',...options}).format(new Date(ts*1000)):'Not scheduled';}
 function day(ts){return date(ts,{weekday:'short',day:'numeric',month:'short'});}
 function clock(ts){return date(ts,{hour:'2-digit',minute:'2-digit',hour12:false});}
@@ -26,12 +27,14 @@ const uploadButton=`<button class="primary" data-action="upload">${icon('plus')}
 const empty=(title,body,action='',ico='film')=>`<div class="empty-state">${icon(ico)}<h2>${title}</h2><p>${body}</p>${action}</div>`;
 const pager=length=>`<div class="pager"><button class="button small" data-action="previous" ${offset===0?'disabled':''}>Previous</button><span>${offset+1}–${offset+length}</span><button class="button small" data-action="next" ${length<50?'disabled':''}>Next</button></div>`;
 function showLogin(){$('#shell').hidden=true;$('#login').hidden=false;$('#login input').focus();}
-async function loadState(){state=await api('/api/state');$('#brand-label').textContent=state.settings.brand_name;$('.avatar').textContent=state.settings.brand_name.slice(0,1).toUpperCase();$('#account-label').textContent=state.account?'@'+state.account.username:'Your posting desk';$('#mode-badge').textContent=state.demo?'Local preview':state.settings.dry_run?'Dry run':'Live publishing';$('#mode-badge').className='badge '+(state.settings.dry_run?'':'green');$('#pause-button').innerHTML=icon(state.settings.paused?'play':'pause')+(state.settings.paused?'Resume':'Pause');$('#timezone-label').textContent=state.settings.timezone;$('#queue-count').textContent=state.main_remaining;const alive=state.heartbeat&&Date.now()/1000-Number(state.heartbeat)<180;$('#worker-label').textContent=alive?'Worker is running':'Worker is offline';$('.worker-indicator').className='worker-indicator'+(alive?' online':'');}
+async function loadState(){state=await api('/api/state');$('#brand-label').textContent=state.settings.brand_name;$('.avatar').textContent=state.settings.brand_name.slice(0,1).toUpperCase();const accountLabel=$('#account-label');accountLabel.textContent=state.account?'@'+state.account.username:'Your workspace';accountLabel.title=accountLabel.textContent;$('#mode-badge').textContent=state.demo?'Local preview':state.settings.dry_run?'Dry run':'Live publishing';$('#mode-badge').className='badge '+(state.settings.dry_run?'':'green');$('#pause-button').innerHTML=icon(state.settings.paused?'play':'pause')+(state.settings.paused?'Resume':'Pause');$('#timezone-label').textContent=state.settings.timezone;$('#queue-count').textContent=state.main_remaining;const alive=state.heartbeat&&Date.now()/1000-Number(state.heartbeat)<180;$('#worker-label').textContent=alive?'Worker is running':'Worker is offline';$('.worker-indicator').className='worker-indicator'+(alive?' online':'');}
 async function refresh(){await loadState();if(!$('#editor').open)await render();}
 async function render(){
  const version=++renderVersion;const page=location.hash.slice(1)||'queue';currentPage=titles[page]?page:'queue';
  document.querySelectorAll('nav a').forEach(a=>{a.classList.toggle('active',a.dataset.page===currentPage);if(a.dataset.page===currentPage)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
- $('#breadcrumb').textContent='Your posting desk / '+titles[currentPage];document.title=titles[currentPage]+' — Reelflow';
+ $('#breadcrumb').textContent=titles[currentPage];
+ const youtubePage=currentPage==='youtube';
+ $('#mode-badge').hidden=youtubePage;$('#pause-button').hidden=youtubePage;document.title=titles[currentPage]+' — Reelflow';
  let html='';const s=state.settings;
  if(currentPage==='queue'){
   let calendar;
@@ -39,7 +42,7 @@ async function render(){
    calendar=await api('/api/schedule');
    records=calendar.days.flatMap(d=>[...d.main,...d.trial]);
   }else records=await api(`/api/jobs?lane=${filter==='all'?'':filter}&offset=${offset}&limit=50`);
-  html=header('Plan the next run.','See what goes out each day, before you let it run.',uploadButton);
+  html=header('Instagram schedule','See what goes out each day, before you let it run.',uploadButton);
   if(state.demo)html+=`<div class="notice"><p>Local preview. No Instagram account is connected and nothing can publish here.</p></div>`;
   else if(s.paused)html+=`<div class="notice"><p><strong>Publishing is paused.</strong> Build and review your schedule here, then use Resume when you’re ready.${s.dry_run?' Dry run is also on.':''}</p></div>`;
   else if(s.dry_run)html+=`<div class="notice"><p><strong>Dry run is on.</strong> Footage and captions are prepared, but nothing is published.</p><a href="#settings">Review setup →</a></div>`;
@@ -56,7 +59,7 @@ async function render(){
  if(currentPage==='library'){
   const clips=await api(`/api/clips?offset=${offset}&limit=50`);
   if(version!==renderVersion)return;
-  records=clips;html=header('The source material.','Drop footage in your watched folder, or upload it here. We’ll take it from there.',`<button class="button" data-action="scan">${icon('refresh')}Scan folder</button>${uploadButton}`);
+  records=clips;html=header('Footage library','Drop footage in your watched folder, or upload it here. We’ll take it from there.',`<button class="button" data-action="scan">${icon('refresh')}Scan folder</button>${uploadButton}`);
   html+=`<div class="notice"><p>Watching <code>${esc(state.footage_path)}</code>. Files are deduplicated by content. Originals in this folder are never modified.</p></div>`;
   html+=`<div class="rebuild-tools"><button type="button" class="button" data-action="rebuild-clips">${icon('refresh')}Rebuild all videos</button><p class="help">${state.rebuilding?`${state.rebuilding} video${state.rebuilding===1?'':'s'} waiting to rebuild or being rebuilt. Check Activity for results.`:'Recreate the exports from the originals. Captions and posting history stay in place.'}</p></div>`;
   html+=captionTools();
@@ -64,22 +67,256 @@ async function render(){
   html+=`<div id="drop-zone" class="drop-zone">${icon('upload')}<strong>Drop footage here</strong><p>MP4, MOV, M4V, MKV or WebM · up to 5 GB per input</p><button class="button small" data-action="upload">Browse files</button><p id="upload-progress" role="status"></p></div>`;
  }
  if(currentPage==='history'){
-  records=await api(`/api/jobs?status=${filter==='rejected'?'rejected':'published'}&offset=${offset}&limit=50`);html=header('Out in the world.','A lasting record of what went out, when, and where.',`<div class="tabs"><button class="tab ${filter!=='rejected'?'active':''}" data-filter="all">Published</button><button class="tab ${filter==='rejected'?'active':''}" data-filter="rejected">Rejected</button></div>`);
+  records=await api(`/api/jobs?status=${filter==='rejected'?'rejected':'published'}&offset=${offset}&limit=50`);html=header('Published Reels','A lasting record of what went out, when, and where.',`<div class="tabs"><button class="tab ${filter!=='rejected'?'active':''}" data-filter="all">Published</button><button class="tab ${filter==='rejected'?'active':''}" data-filter="rejected">Rejected</button></div>`);
   html+=records.length?records.map(jobRow).join('')+pager(records.length):empty(filter==='rejected'?'Nothing rejected.':'Your first Reel starts here.',filter==='rejected'?'Clips you reject from the queue will stay here for reference or restoration.':'Once a Reel publishes, its caption, destination and posting time will appear here.','<a class="button" href="#queue">See upcoming Reels</a>','check');
  }
  if(currentPage==='activity'){
-  records=await api(`/api/events?offset=${offset}&limit=50`);html=header('Every move, recorded.','Intake, captions, queue changes, notifications, and publishing outcomes.');
+  records=await api(`/api/events?offset=${offset}&limit=50`);html=header('Activity log','Intake, captions, queue changes, notifications, and publishing outcomes.');
   html+=records.length?records.map(r=>`<div class="log-row"><time>${day(r.at)}<br>${clock(r.at)}</time><span>${badge(r.level,r.level==='error'?'rust':r.level==='warning'?'rust':'')}</span><p>${esc(r.message)}${r.job_id?' · Post #'+r.job_id:''}</p></div>`).join('')+pager(records.length):empty('Quiet for now.','Your activity log fills automatically as footage arrives and the worker runs.','','activity');
  }
  if(currentPage==='insights'){
-  const data=await api('/api/insights');records=data.posts;html=header('Find your frequency.','Your account’s voice and audience, learned from actual posts.');
+  const data=await api('/api/insights');records=data.posts;html=header('Audience & captions','Your account’s voice and audience, learned from actual posts.');
   html+=`<div class="insights-summary">${icon('spark')}<div><strong>${records.length?records.length+' recent posts in your voice reference':'Your account sets the tone.'}</strong><p>${esc(data.note)} Captions use recent posts, available engagement, three silent frames and your notes. No invented crowd, track or venue claims.</p></div>${badge(state.metric_samples+' mature samples',state.metric_samples?'green':'')}</div>`;
   html+=records.length?`<div class="table-wrap"><table><thead><tr><th>Post / caption</th><th>Date</th><th>Views</th><th>Reach</th><th>Likes</th><th>Saves</th><th>Shares</th></tr></thead><tbody>${records.map(r=>`<tr><td><span class="caption-cell">${esc(r.caption||'No caption')}${r.permalink?` <a href="${safeLink(r.permalink)}" target="_blank" rel="noopener noreferrer" aria-label="Open Instagram post">↗</a>`:''}</span>${r.metrics_error?'<span class="help">Insights unavailable; check permissions.</span>':''}</td><td>${day(r.timestamp)}</td>${['views','reach','likes','saves','shares'].map(k=>`<td>${r[k]===null?'—':Number(r[k]).toLocaleString()}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:empty('Let your past posts do the talking.','Connect Instagram in Settings. The next worker pass imports recent captions and available performance, so your next post sounds like you.','<a class="button" href="#settings">Connect Instagram</a>','instagram');
+ }
+ if(youtubePage){
+  const data=await api(`/api/youtube?view=${youtubeView}&offset=${youtubeOffset}`);
+  if(version!==renderVersion)return;
+  youtubeData=data;
+  html=youtubeWorkspace(data);
  }
  if(currentPage==='settings')html=settingsView();
  if(version!==renderVersion)return;
  $('#content').innerHTML=html;icons();bindForms();
+ if(youtubePage){
+  bindYoutube();
+  if(youtubeFocus){const id=youtubeFocus;youtubeFocus=null;await openYoutubeJob(id);}
+ }
 }
+const youtubeOptions={
+ visibility:[['private','Private'],['unlisted','Unlisted'],['public','Public']],
+ category:[['22','People & Blogs'],['10','Music'],['24','Entertainment']],
+};
+const youtubeStates={draft:'Needs review',queued:'Scheduled',uploading:'Uploading',uploaded:'Uploaded',skipped:'Skipped',failed:'Needs attention',uncertain:'Check YouTube Studio',invalid:'File needs attention'};
+const youtubeKind=kind=>kind==='short'?'Short':'Full set';
+function youtubeSelect(name,label,options,current){
+ return `<label class="field">${label}<select name="${name}">${options.map(([value,text])=>`<option value="${value}" ${current===value?'selected':''}>${text}</option>`).join('')}</select></label>`;
+}
+function youtubeToggle(name,label,checked,help=''){
+ return `<label class="youtube-toggle"><span><strong>${label}</strong>${help?`<small>${help}</small>`:''}</span><input type="checkbox" name="${name}" ${checked?'checked':''}></label>`;
+}
+function youtubeNumber(name,label,value,max){
+ return `<label class="field">${label}<input type="number" name="${name}" min="0" max="${max}" value="${value}" required></label>`;
+}
+function youtubeSetup(data){
+ const account=data.account;
+ return `<section class="youtube-panel youtube-channel" aria-labelledby="youtube-channel-title">
+   <div class="youtube-panel-heading"><div class="youtube-platform-icon">${icon('play')}</div><div><h2 id="youtube-channel-title">${account?esc(account.title):'Connect YouTube'}</h2><p>${data.connected?'Uploads go to this channel.':account?'Reconnect to resume uploads.':'Link the channel that should receive your uploads.'}</p></div>
+   ${badge(data.connected?'Connected':'Setup needed',data.connected?'green':'')}</div>
+   ${account?.error?`<p class="editor-error">${esc(account.error)}</p>`:''}
+   <details id="youtube-connection" ${!data.connected?'open':''}><summary>${data.connected?'Connection settings':'Set up Google sign-in'}</summary>
+    <ol class="youtube-steps">
+     <li>In <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener noreferrer">Google Cloud</a>, select or create a project and enable <strong>YouTube Data API v3</strong>.</li>
+     <li>Set up the <a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener noreferrer">Google Auth Platform</a>. If the app is in Testing, add your Google account under <strong>Audience → Test users</strong>.</li>
+     <li>Under <strong>Clients</strong>, create a <strong>Web application</strong> and add this authorized redirect URI.</li>
+    </ol>
+    <label class="field">Authorized redirect URI<input id="youtube-callback" value="${esc(data.callback)}" readonly></label>
+    <button type="button" class="button small" data-yt-control="copy">Copy redirect URI</button>
+    <form id="youtube-credentials">
+     <label class="field">Client ID<input name="client_id" value="${esc(data.client_id)}" required maxlength="300" autocomplete="off" placeholder="….apps.googleusercontent.com"></label>
+     <label class="field">Client secret<input name="client_secret" type="password" maxlength="1000" autocomplete="new-password" ${data.client_id?'':'required'} placeholder="${data.client_id?'Leave blank to keep the saved secret':'Paste the secret from Google Cloud'}"></label>
+     <div class="inline-actions"><button class="primary" type="submit">${data.connected?'Reconnect Google':'Save & connect Google'} ${icon('arrow')}</button>
+     ${data.connected?`<button class="text-button" type="button" data-yt-control="disconnect">Disconnect</button>`:''}</div>
+    </form>
+   </details>
+  </section>`;
+}
+function youtubePreferences(data){
+ const p=data.preferences;
+ return `<section class="youtube-panel" aria-labelledby="youtube-preferences-title">
+ <details id="youtube-preferences"><summary id="youtube-preferences-title">Automation & defaults</summary>
+ <form id="youtube-preferences-form">
+  ${youtubeToggle('auto_shorts','Create Short drafts automatically',p.auto_shorts,'Adds eligible square and vertical clips from the Footage library, including existing clips.')}
+  ${youtubeToggle('auto_approve','Schedule new drafts automatically',p.auto_approve,'Applies to new folder sets and automatically added Shorts. Existing drafts still need review.')}
+  <h3>Upload schedule</h3>
+  <p class="help">Times use ${esc(data.timezone)}. Set a frequency to 0 to stop automatic uploads of that type.</p>
+  <div class="form-row">${youtubeNumber('shorts_per_day','Shorts per day',p.shorts_per_day,10)}${youtubeNumber('short_hour','First Short hour',p.short_hour,23)}</div>
+  <div class="form-row">${youtubeNumber('sets_every_days','Days between sets',p.sets_every_days,90)}${youtubeNumber('set_hour','Set upload hour',p.set_hour,23)}</div>
+  <h3>Defaults for new drafts</h3>
+  <div class="form-row">${youtubeSelect('visibility','Visibility',youtubeOptions.visibility,p.visibility)}${youtubeSelect('category','Category',youtubeOptions.category,p.category)}</div>
+  ${youtubeToggle('made_for_kids','Made for kids',p.made_for_kids)}
+  <label class="field">Description footer<textarea name="description_footer" rows="3" maxlength="2000" placeholder="Booking email, links or credits">${esc(p.description_footer)}</textarea></label>
+  <button class="primary" type="submit">Save preferences</button>
+ </form></details></section>`;
+}
+function youtubeQueueRow(job){
+ const when=job.uploaded_at||job.scheduled_at;
+ const visibility=job.actual_visibility||job.visibility;
+ const status=job.status==='queued'&&!job.scheduled_at?'Awaiting a slot':job.manual&&job.status==='queued'?'Upload requested':youtubeStates[job.status];
+ const percent=job.total_bytes?Math.round(100*job.uploaded_bytes/job.total_bytes):0;
+ return `<article class="youtube-row">
+  <div class="youtube-format">${icon(job.kind==='short'?'play':'film')}<span>${youtubeKind(job.kind)}</span></div>
+  <div class="youtube-row-title"><h3>${esc(job.title)}</h3><p title="${esc(job.source_name)}">${esc(job.source_name)}${job.duration?` · ${Math.floor(job.duration/60)}:${String(Math.floor(job.duration)%60).padStart(2,'0')}`:''}</p>${job.status==='uploading'&&job.total_bytes?`<progress max="100" value="${percent}" aria-label="Upload progress"></progress>`:''}</div>
+  <div class="youtube-row-time">${when?`<strong>${day(when)}</strong><span>${clock(when)}${job.pinned?' · Pinned':''}</span>`:'<span>Unscheduled</span>'}</div>
+  <div class="youtube-row-state">${badge(status,job.status==='uploaded'?'green':job.error?'rust':'')}<span>${esc(visibility)}</span></div>
+  <button type="button" class="button small" data-youtube-job="${job.id}" aria-label="Review ${esc(job.title)}">${job.status==='uploaded'?'Details':'Review'}</button>
+ </article>`;
+}
+function youtubeWorkspace(data){
+ const controls=`<button class="button" type="button" data-yt-control="scan">${icon('refresh')}Scan sets</button><button class="primary" type="button" data-yt-control="upload">${icon('plus')}Add full set</button>`;
+ const tabs=[['queue','All'],['drafts','Review'],['scheduled','Scheduled'],['uploaded','Uploaded'],['skipped','Skipped']];
+ const emptyCopy={
+  queue:['No uploads in the queue','Add a finished set or open a square or vertical clip in the Footage library to create a Short.'],
+  drafts:['Nothing to review','New drafts and uploads that need attention will appear here.'],
+  scheduled:['No scheduled uploads','Approve a draft to give it a slot.'],
+  uploaded:['No uploads yet','Finished uploads will appear here with their visibility and a link to YouTube Studio.'],
+  skipped:['No skipped uploads','You can restore skipped drafts when you’re ready.'],
+ }[youtubeView];
+ return header('YouTube','Schedule Shorts and finished 20–30 minute sets.',controls)+`
+  <div class="youtube-status-strip"><div><span class="worker-indicator ${data.connected&&!data.preferences.paused?'online':''}"></span><div>
+    <strong>${data.preferences.paused?'Automatic uploads paused':data.connected?'Automatic uploads enabled':'Waiting for channel connection'}</strong>
+    <p>${data.preferences.auto_approve?'New automatic drafts are scheduled.':'Review new drafts before scheduling.'} ${data.queue_count} in queue.</p>
+  </div></div><button type="button" class="button small" data-yt-control="pause" ${!data.connected&&data.preferences.paused?'disabled':''}>${data.preferences.paused?'Resume automatic uploads':'Pause automatic uploads'}</button></div>
+  <div class="youtube-layout">
+   <section class="youtube-queue" aria-labelledby="youtube-queue-title"><div class="section-head"><h2 id="youtube-queue-title">Upload queue</h2>
+    <div class="tabs" role="group" aria-label="YouTube queue view">${tabs.map(([key,text])=>`<button type="button" class="tab ${youtubeView===key?'active':''}" data-youtube-view="${key}" aria-pressed="${youtubeView===key}">${text}</button>`).join('')}</div></div>
+    ${data.jobs.length?data.jobs.map(youtubeQueueRow).join(''):empty(emptyCopy[0],emptyCopy[1],youtubeView==='queue'?'<a class="button" href="#library">Open footage library</a>':'','film')}
+    ${youtubeOffset||data.more?`<div class="pager"><button class="button small" data-yt-control="previous" ${youtubeOffset?'':'disabled'}>Previous</button><span>${youtubeOffset+1}–${youtubeOffset+data.jobs.length}</span><button class="button small" data-yt-control="next" ${data.more?'':'disabled'}>Next</button></div>`:''}
+   </section>
+   <aside aria-label="YouTube setup">
+    ${youtubeSetup(data)}
+    <section class="youtube-panel youtube-folder"><h2>Watched set folder</h2><p>Drop a finished 20–30 minute video here. Reelflow waits for the copy to finish and adds it to the queue.</p><code>${esc(data.folder)}</code><p class="help">For large files, use this folder or open Reelflow directly on your network. Your tunnel may limit browser uploads.</p></section>
+    ${youtubePreferences(data)}
+   </aside>
+  </div>`;
+}
+function youtubeEditForm(job){
+ const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone;
+ const localTime=job.pinned&&job.scheduled_at?new Date((job.scheduled_at*1000)-new Date(job.scheduled_at*1000).getTimezoneOffset()*60000).toISOString().slice(0,16):'';
+ return `<form id="youtube-edit">
+ <label class="field">Title<input name="title" value="${esc(job.title)}" required maxlength="100"></label>
+ <label class="field">Description<textarea name="description" rows="4" maxlength="5000">${esc(job.description)}</textarea></label>
+ <div class="form-row">${youtubeSelect('visibility','Visibility',youtubeOptions.visibility,job.visibility)}${youtubeSelect('category','Category',youtubeOptions.category,job.category)}</div>
+ ${youtubeToggle('made_for_kids','Made for kids',job.made_for_kids)}
+ <label class="field">Choose upload time <span>Optional · ${esc(timezone)}. Leave blank to use the automatic schedule.</span><input type="datetime-local" name="scheduled_at" value="${localTime}"></label>
+ <button class="primary" type="submit">Save details</button>
+ </form>`;
+}
+function youtubeJobActions(job){
+ const button=(action,label,style='button')=>`<button type="button" class="${style}" data-yt-job-action="${action}">${label}</button>`;
+ if(job.status==='draft'||job.status==='queued'){
+  return `<div class="inline-actions">${job.status==='draft'?button('approve','Approve for schedule'):button('hold','Hold for review')}
+   ${youtubeData.connected?button('upload_now','Upload now') : ''}${button('skip','Skip')}</div>`;
+ }
+ if(job.status==='invalid')return button('skip','Dismiss');
+ if(job.status==='skipped'&&!job.error)return button('restore','Restore draft');
+ if(job.status==='failed'||job.status==='uncertain'){
+  return `${job.status==='failed'?button('retry','Retry upload'):''}
+   ${job.saved_session||job.status==='uncertain'?`<details class="youtube-recovery"><summary>Resolve in YouTube Studio</summary>
+    <p class="help">Open YouTube Studio and check whether the video arrived before resetting the upload.</p>
+    <a class="button small" href="https://studio.youtube.com/" target="_blank" rel="noopener noreferrer">Open Studio ${icon('external')}</a>
+    <label class="field">Video ID if found<input id="youtube-video-id" maxlength="11" pattern="[A-Za-z0-9_-]{11}"></label>
+    <div class="inline-actions">${button('confirm_uploaded','Mark as uploaded')}${button('confirm_absent','I checked. Create a new draft.')}</div></details>`:''}`;
+ }
+ return '';
+}
+async function openYoutubeJob(id){
+ const job=await api('/api/youtube/jobs/'+Number(id));
+ if(currentPage!=='youtube')return;
+ const dialog=$('#editor');
+ $('#editor-title').textContent=youtubeKind(job.kind)+' details';
+ const editable=['draft','queued','failed'].includes(job.status)&&!job.saved_session;
+ const link=job.video_id?`<a class="button" href="https://studio.youtube.com/video/${encodeURIComponent(job.video_id)}/edit" target="_blank" rel="noopener noreferrer">Open in YouTube Studio ${icon('external')}</a>`:'';
+ const when=job.uploaded_at||job.scheduled_at;
+ $('#editor-body').innerHTML=`${job.status!=='invalid'?`<video class="editor-video" src="/api/youtube/jobs/${job.id}/video" controls playsinline preload="metadata"></video><p id="youtube-preview-error" class="help" hidden>Preview unavailable. <a download href="/api/youtube/jobs/${job.id}/video">Download the video</a>.</p>`:''}
+  <p class="editor-name">${esc(job.source_name)}</p>
+  <p class="youtube-drawer-state">${badge(youtubeStates[job.status],job.error?'rust':'')} <span>${esc(job.actual_visibility||job.visibility)}${when?` · ${day(when)} ${clock(when)}`:''}</span></p>
+  ${job.error?`<p class="editor-error" role="alert">${esc(job.error)}</p>`:''}
+  ${editable?youtubeEditForm(job):`<h3>${esc(job.title)}</h3><p class="youtube-description">${esc(job.description)}</p>`}
+  <div class="youtube-drawer-actions">${link}${youtubeJobActions(job)}</div>`;
+ const video=$('#editor-body video');
+ video?.addEventListener('error',()=>{video.hidden=true;$('#youtube-preview-error').hidden=false;});
+ const form=$('#youtube-edit');
+ form?.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const el=e.currentTarget.elements, when=el.scheduled_at.value;
+  await busy(e.submitter,async()=>{
+   await api('/api/youtube/jobs/'+job.id,'PATCH',{title:el.title.value,description:el.description.value,
+    visibility:el.visibility.value,category:el.category.value,made_for_kids:el.made_for_kids.checked,
+    scheduled_at:when?new Date(when).getTime()/1000:null});
+   await render();await openYoutubeJob(job.id);toast('Upload details saved.');
+  });
+ });
+ dialog.querySelectorAll('[data-yt-job-action]').forEach(button=>button.addEventListener('click',()=>busy(button,async()=>{
+  const action=button.dataset.ytJobAction;
+  if(['approve','upload_now'].includes(action)&&form&&[...form.elements].some(el=>el.name&&(el.type==='checkbox'?el.checked!==el.defaultChecked:el.tagName==='SELECT'?el.value!==[...el.options].find(option=>option.defaultSelected)?.value:el.value!==el.defaultValue))){
+   toast('Save your changes before scheduling this upload.',true);return;
+  }
+  if(action==='upload_now'&&!window.confirm(`Upload “${job.title}” to YouTube as ${job.visibility} now?`))return;
+  if(action==='confirm_absent'&&!window.confirm('Confirm you checked YouTube Studio and this video was absent.'))return;
+  const video_id=$('#youtube-video-id')?.value.trim()||'';
+  if(action==='confirm_uploaded'&&!/^[A-Za-z0-9_-]{11}$/.test(video_id)){toast('Enter the 11-character YouTube video ID.',true);return;}
+  await api('/api/youtube/jobs/'+job.id+'/action','POST',{action,video_id});
+  dialog.close();await render();toast(action==='upload_now'?'Upload requested. Track progress in the queue.':'Upload queue updated.');
+ })));
+ if(!dialog.open)dialog.showModal();
+}
+function bindYoutube(){
+ const prefs=$('#youtube-preferences-form');
+ prefs.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const elements=e.currentTarget.elements;
+  await busy(e.submitter,async()=>{
+   const values={...youtubeData.preferences};
+   Object.keys(values).forEach(key=>{
+    const el=elements[key];
+    if(el)values[key]=typeof values[key]==='boolean'?el.checked:typeof values[key]==='number'?Number(el.value):el.value;
+   });
+   await api('/api/youtube/preferences','PUT',values);
+   await render();$('#youtube-preferences').open=true;toast('YouTube preferences saved.');
+  });
+ });
+ $('#youtube-credentials').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const el=e.currentTarget.elements;
+  await busy(e.submitter,async()=>{
+   await api('/api/youtube/credentials','PUT',{client_id:el.client_id.value,client_secret:el.client_secret.value});
+   const connection=await api('/api/youtube/connect','POST');
+   window.location.assign(connection.url);
+  });
+ });
+ $('#content').querySelectorAll('[data-youtube-job]').forEach(button=>button.addEventListener('click',()=>busy(button,()=>openYoutubeJob(button.dataset.youtubeJob))));
+ $('#content').querySelectorAll('[data-youtube-view]').forEach(button=>button.addEventListener('click',()=>{
+  youtubeView=button.dataset.youtubeView;youtubeOffset=0;render().catch(e=>toast(e.message,true));
+ }));
+ $('#content').querySelectorAll('[data-yt-control]').forEach(button=>button.addEventListener('click',()=>busy(button,async()=>{
+  switch(button.dataset.ytControl){
+  case 'copy': {
+   const input=$('#youtube-callback');
+   input.select();
+   if(navigator.clipboard)await navigator.clipboard.writeText(input.value);
+   else if(!document.execCommand('copy'))throw new Error('Copy the selected redirect URI.');
+   toast('Redirect URI copied.');break;
+  }
+  case 'disconnect':
+   if(!window.confirm('Disconnect the channel and pause automatic YouTube uploads?'))return;
+   await api('/api/youtube/disconnect','POST');await render();toast('YouTube disconnected.');break;
+  case 'upload': chooseUpload('youtube');break;
+  case 'scan': toast((await api('/api/youtube/scan','POST')).message);break;
+  case 'pause': {
+   const paused=!youtubeData.preferences.paused;
+   if(!paused&&!window.confirm('Resume scheduled YouTube uploads with their saved visibility?'))return;
+   await api('/api/youtube/preferences','PUT',{...youtubeData.preferences,paused});
+   await render();break;
+  }
+  case 'next': youtubeOffset+=50;await render();break;
+  case 'previous': youtubeOffset=Math.max(0,youtubeOffset-50);await render();break;
+  }
+ })));
+ const error=new URLSearchParams(location.search).get('youtube_error');
+ if(error){history.replaceState(null,'',location.pathname+'#youtube');toast(error,true);}
+}
+
 function scheduleControls(){const s={...state.settings,...scheduleDraft};return `<form id="schedule-form" class="schedule-controls"><label>Preview days<input name="preview_days" type="number" min="1" max="90" required value="${s.preview_days}"></label><label>Trial Reels / day<input name="trials_per_day" type="number" min="0" max="10" required value="${s.trials_per_day}"></label><label>Grid Reels / day<input name="main_per_day" type="number" min="0" max="10" required value="${s.main_per_day}"></label><button class="primary" type="submit">${icon('clock')}Save & build schedule</button><a href="#settings" class="text-button">Timing & caption options</a><p>Set either daily count to 0 to stop that destination. Building the schedule does not resume publishing.${state.settings.trials_enabled?'':' Trial publishing is also switched off in Settings.'}</p></form>`;}
 function schedulePost(j){const off=j.lane==='main'?!state.settings.main_per_day:!state.settings.trials_enabled||!state.settings.trials_per_day;const status=j.status==='published'?'Published':postingNow(j)?'Post now requested':off?'Destination switched off':!j.approved?'Needs approval':({queued:'Ready',retry:'Retry pending',processing:'Preparing to publish',publishing:'Publishing',uncertain:'Check Instagram',failed:'Needs attention'}[j.status]||j.status);return `<button type="button" class="schedule-post" data-job="${j.id}" aria-label="Review ${esc(j.name)}, ${j.lane==='main'?'grid':'Trial'} Reel at ${clock(j.published_at||j.scheduled_at)}"><time>${clock(j.published_at||j.scheduled_at)}</time><img src="/api/preview/${j.clip_id}" alt="" loading="lazy"><span class="schedule-post-copy"><strong>${esc(j.name)}</strong><span class="schedule-caption">${esc(j.caption)}</span><span class="schedule-status ${j.error||!j.approved?'attention':''}">${esc(status)}${j.pinned?' · Time pinned':''}</span></span>${icon('edit')}</button>`;}
 function scheduleView(data){return `<p class="schedule-summary">${data.totals.trial} Trial${data.totals.trial===1?'':'s'} and ${data.totals.main} grid Reel${data.totals.main===1?'':'s'} planned across ${data.days.length} day${data.days.length===1?'':'s'}. All times in ${esc(data.timezone)}.</p>${data.preparing||data.unscheduled||data.overdue?`<div class="notice"><p>${data.preparing?`${data.preparing} clip${data.preparing===1?' is':'s are'} still preparing or waiting for a caption. `:''}${data.unscheduled?`${data.unscheduled} post${data.unscheduled===1?' has':'s have'} no slot yet, including switched-off destinations. `:''}${data.overdue?`${data.overdue} older post${data.overdue===1?' needs':'s need'} review in the post list. `:''}Only posts with assigned times appear below.</p></div>`:''}${data.days.map(d=>`<section class="schedule-day" aria-label="Day ${d.number}, ${day(d.timestamp)}"><div class="schedule-day-heading"><h3>Day ${d.number}<span>${day(d.timestamp)}</span></h3><span>${d.trial.length} Trial${d.trial.length===1?'':'s'} · ${d.main.length} grid</span></div><div class="schedule-lanes">${['trial','main'].map(lane=>`<div class="schedule-lane"><div class="schedule-lane-heading">${laneTag(lane)}<span>${lane==='trial'?'Non-followers first':'Profile grid + feed'}</span></div>${d[lane].length?d[lane].map(schedulePost).join(''):`<p class="schedule-empty">${data.limits[lane]?`No ${lane==='trial'?'Trial':'grid'} Reels scheduled.`:'This destination is switched off.'}</p>`}</div>`).join('')}</div></section>`).join('')}<p class="help">Daily counts are limits, not filler. Available footage, captions, same-clip spacing and conservation can leave gaps. Published posts today remain visible for context. Pinned times may exceed a daily target; the publisher still enforces the daily limit.</p>`;}
@@ -232,7 +469,7 @@ function reelPresentation(){
  ${settingSelect('export_quality','Export quality',[['standard','Standard'],['detail','Higher detail']],'Higher detail uses more storage and bandwidth. Use Rebuild all videos to apply it to existing exports. Both profiles preserve the source framing.')}
  </section>`;
 }
-function settingsView(){const s=state.settings;return header('Your desk. Your rules.','Set it up once. Come back when you want to change the mix.')+`<form id="settings-form"><div class="settings-grid"><div><section class="settings-section"><h2>Instagram</h2><div class="connection">${icon('instagram')}<div><strong>${state.account?'@'+esc(state.account.username):'No account connected'}</strong><p>${state.account?'Connection expires '+day(state.account.expires_at):'Business or Creator account required'}</p>${badge(state.account?'Connected':'Setup needed',state.account?'green':'')}</div><div class="inline-actions"><a href="/auth/instagram/start" class="button">${state.account?'Reconnect Instagram':'Connect Instagram'} ${icon('arrow')}</a>${state.account?'<button type="button" data-action="disconnect" class="text-button">Disconnect</button>':''}</div><p class="help">${state.meta_configured?'Meta app is configured. Login imports your recent posts on the next worker pass.':'Add META_APP_ID and META_APP_SECRET to compose.yaml, set your public HTTPS URL, and restart Docker. The deployment guide covers the exact redirect URL and permissions.'}</p><p class="help">Redirect URL: <code>${esc(state.public_url)}/auth/instagram/callback</code></p></section><section class="settings-section"><h2>Captions & voice</h2><p>The account’s previous posts lead. These notes steer the result for any artist, business or creator.</p>${field('brand_name','Account / brand name') }<label>What is this account about?<textarea name="business_context">${esc(s.business_context)}</textarea></label><label>Voice & factual guardrails<textarea name="voice_notes" maxlength="4000">${esc(s.voice_notes)}</textarea></label><label>Custom caption instructions<textarea name="caption_instructions" maxlength="4000" placeholder="e.g. Write like us: dry humour, lowercase, no emojis. One short sentence. Never say ‘big things coming’.">${esc(s.caption_instructions)}</textarea><span>Sent to the caption model with every new caption and rewrite. Set tone, wording, hashtags or phrases to avoid. Existing captions stay as they are until you choose Rewrite caption. Factual accuracy and the caption format still apply.</span></label>${captionRules(s)}<div class="connection">${icon('spark')}<div><strong>${state.ai_configured?'AI provider connected':'Connect a caption provider'}</strong><p>${esc(state.ai_base)}</p></div></div><div class="inline-actions"><a href="/auth/openrouter/start" class="button">Sign in with OpenRouter ${icon('arrow')}</a><button type="button" class="button" data-action="models">Load model catalog</button></div><label>Model ID<input name="ai_model" list="model-options" value="${esc(s.ai_model)}" placeholder="Choose a model from the live catalog"><datalist id="model-options"></datalist><span>Use a model that accepts images with visual captions enabled. Model names come from the provider; no assumed model alias.</span></label><label>Or paste an API key<input name="ai_key" type="password" autocomplete="new-password" placeholder="${state.ai_configured?'A key is stored securely. Leave blank to keep it.':'OpenRouter or configured provider API key'}"><span>Encrypted on the server. Never returned to your browser.</span></label>${toggle('ai_vision','Use sampled footage frames','Three silent frames go to your selected AI provider. Disable for text and operator notes only.')}<p class="help">OpenRouter sign-in uses your OpenRouter credit. To use another OpenAI-compatible provider, change AI_BASE_URL in compose.yaml. A missing provider or failed caption holds the clip for review.</p></section>${reelPresentation()}</div><div><section class="settings-section"><h2>The posting rhythm</h2>${field('timezone','Audience timezone','text','Editable until you know where your audience is. Use an IANA name, e.g. Europe/London.')}${toggle('paused','Pause all publishing')}${toggle('dry_run','Dry run','Prepare and review the queue without posting to Instagram.')}${toggle('require_approval','Require approval for new posts','Off means fully automatic. Existing approvals stay as they are.')}${toggle('trials_enabled','Publish Trial Reels','Every clip once. Trials stay Trials; automatic graduation is off.')}<div class="form-row">${field('trials_per_day','Trial Reels per day','number','0 switches Trials off.','min="0" max="10"')}${field('main_per_day','Grid Reels per day','number','0 switches grid posts off.','min="0" max="10"')}</div><div class="form-row">${field('preview_days','Schedule preview (days)','number','','min="1" max="90"')}${field('min_gap_days','Same clip, lane gap (days)','number','','min="0" max="90"')}</div><p class="help">Grid Reels are shared to your profile and feed. Trials reach non-followers first and stay off your grid. Trial eligibility is checked by Instagram when publishing. There is no fallback that silently publishes a Trial to your main feed.</p><h3>Posting times</h3><div class="form-row">${field('posting_start_hour','First posting hour','number','24-hour time, in the audience timezone.','min="0" max="22"')}${field('posting_end_hour','Last posting hour','number','Allow at least 90 minutes between posts to the same destination.','min="1" max="23"')}</div>${toggle('learn_timing','Learn posting times from engagement','Off uses your preferred weekday hour and spreads extra posts across your window.')}<h3>Preferred hour by weekday</h3><div class="week-hours">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=>`<label>${d}<input type="number" name="hour_${i}" min="0" max="23" value="${s.schedule_hours[i]}" aria-label="${d} starting hour"></label>`).join('')}</div><p class="help">24-hour format. One grid slot favours this hour, within your posting window; extra posts and Trials spread across that window. When timing learning is on, five mature same-weekday observations unlock timing choices; every fifth date explores another hour.</p></section><section class="settings-section"><h2>Keep the footage going</h2>${toggle('conserve','Automatically conserve footage','Use the lighter rhythm below when stock is low or a footage break would exhaust the library.')}<div class="form-row">${field('conserve_every_days','Conservation: post every N days','number','','min="2" max="14"')}${field('conserve_main_per_day','Grid Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}</div>${field('conserve_trials_per_day','Trial Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}${field('low_watermark','Low-footage threshold (clips)','number','','min="0" max="365"')}${field('drought_until','No new footage until','date','Clear this date when you are filming again. If your conservation pace still cannot cover the gap, you get an alert.')}<div class="form-row">${field('ntfy_url','ntfy server','url')}${field('ntfy_topic','ntfy topic','text','Use a private topic or an authenticated server.')}</div><label>ntfy access token<input name="ntfy_token" type="password" autocomplete="new-password" placeholder="${state.ntfy_token_set?'Token stored. Leave blank to keep it.':'Optional bearer token'}"></label><button type="button" class="button small" data-action="notify">Send a test notification</button><p class="help">Save changes before testing. Low stock alerts are limited to once per day, failures have durable delivery retries, and post problems include a recovery prompt.</p></section></div></div><div class="save-bar"><button class="primary" type="submit">Save settings ${icon('check')}</button><span>Changes apply to the future queue. Pinned times stay in place.</span></div></form>`;}
+function settingsView(){const s=state.settings;return header('Workspace settings','Set it up once. Come back when you want to change the mix.')+`<form id="settings-form"><div class="settings-grid"><div><section class="settings-section"><h2>Instagram</h2><div class="connection">${icon('instagram')}<div><strong>${state.account?'@'+esc(state.account.username):'No account connected'}</strong><p>${state.account?'Connection expires '+day(state.account.expires_at):'Business or Creator account required'}</p>${badge(state.account?'Connected':'Setup needed',state.account?'green':'')}</div><div class="inline-actions"><a href="/auth/instagram/start" class="button">${state.account?'Reconnect Instagram':'Connect Instagram'} ${icon('arrow')}</a>${state.account?'<button type="button" data-action="disconnect" class="text-button">Disconnect</button>':''}</div><p class="help">${state.meta_configured?'Meta app is configured. Login imports your recent posts on the next worker pass.':'Add META_APP_ID and META_APP_SECRET to compose.yaml, set your public HTTPS URL, and restart Docker. The deployment guide covers the exact redirect URL and permissions.'}</p><p class="help">Redirect URL: <code>${esc(state.public_url)}/auth/instagram/callback</code></p></section><section class="settings-section"><h2>Captions & voice</h2><p>The account’s previous posts lead. These notes steer the result for any artist, business or creator.</p>${field('brand_name','Account / brand name') }<label>What is this account about?<textarea name="business_context">${esc(s.business_context)}</textarea></label><label>Voice & factual guardrails<textarea name="voice_notes" maxlength="4000">${esc(s.voice_notes)}</textarea></label><label>Custom caption instructions<textarea name="caption_instructions" maxlength="4000" placeholder="e.g. Write like us: dry humour, lowercase, no emojis. One short sentence. Never say ‘big things coming’.">${esc(s.caption_instructions)}</textarea><span>Sent to the caption model with every new caption and rewrite. Set tone, wording, hashtags or phrases to avoid. Existing captions stay as they are until you choose Rewrite caption. Factual accuracy and the caption format still apply.</span></label>${captionRules(s)}<div class="connection">${icon('spark')}<div><strong>${state.ai_configured?'AI provider connected':'Connect a caption provider'}</strong><p>${esc(state.ai_base)}</p></div></div><div class="inline-actions"><a href="/auth/openrouter/start" class="button">Sign in with OpenRouter ${icon('arrow')}</a><button type="button" class="button" data-action="models">Load model catalog</button></div><label>Model ID<input name="ai_model" list="model-options" value="${esc(s.ai_model)}" placeholder="Choose a model from the live catalog"><datalist id="model-options"></datalist><span>Use a model that accepts images with visual captions enabled. Model names come from the provider; no assumed model alias.</span></label><label>Or paste an API key<input name="ai_key" type="password" autocomplete="new-password" placeholder="${state.ai_configured?'A key is stored securely. Leave blank to keep it.':'OpenRouter or configured provider API key'}"><span>Encrypted on the server. Never returned to your browser.</span></label>${toggle('ai_vision','Use sampled footage frames','Three silent frames go to your selected AI provider. Disable for text and operator notes only.')}<p class="help">OpenRouter sign-in uses your OpenRouter credit. To use another OpenAI-compatible provider, change AI_BASE_URL in compose.yaml. A missing provider or failed caption holds the clip for review.</p></section>${reelPresentation()}</div><div><section class="settings-section"><h2>The posting rhythm</h2>${field('timezone','Audience timezone','text','Editable until you know where your audience is. Use an IANA name, e.g. Europe/London.')}${toggle('paused','Pause all publishing')}${toggle('dry_run','Dry run','Prepare and review the queue without posting to Instagram.')}${toggle('require_approval','Require approval for new posts','Off means fully automatic. Existing approvals stay as they are.')}${toggle('trials_enabled','Publish Trial Reels','Every clip once. Trials stay Trials; automatic graduation is off.')}<div class="form-row">${field('trials_per_day','Trial Reels per day','number','0 switches Trials off.','min="0" max="10"')}${field('main_per_day','Grid Reels per day','number','0 switches grid posts off.','min="0" max="10"')}</div><div class="form-row">${field('preview_days','Schedule preview (days)','number','','min="1" max="90"')}${field('min_gap_days','Same clip, lane gap (days)','number','','min="0" max="90"')}</div><p class="help">Grid Reels are shared to your profile and feed. Trials reach non-followers first and stay off your grid. Trial eligibility is checked by Instagram when publishing. There is no fallback that silently publishes a Trial to your main feed.</p><h3>Posting times</h3><div class="form-row">${field('posting_start_hour','First posting hour','number','24-hour time, in the audience timezone.','min="0" max="22"')}${field('posting_end_hour','Last posting hour','number','Allow at least 90 minutes between posts to the same destination.','min="1" max="23"')}</div>${toggle('learn_timing','Learn posting times from engagement','Off uses your preferred weekday hour and spreads extra posts across your window.')}<h3>Preferred hour by weekday</h3><div class="week-hours">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=>`<label>${d}<input type="number" name="hour_${i}" min="0" max="23" value="${s.schedule_hours[i]}" aria-label="${d} starting hour"></label>`).join('')}</div><p class="help">24-hour format. One grid slot favours this hour, within your posting window; extra posts and Trials spread across that window. When timing learning is on, five mature same-weekday observations unlock timing choices; every fifth date explores another hour.</p></section><section class="settings-section"><h2>Keep the footage going</h2>${toggle('conserve','Automatically conserve footage','Use the lighter rhythm below when stock is low or a footage break would exhaust the library.')}<div class="form-row">${field('conserve_every_days','Conservation: post every N days','number','','min="2" max="14"')}${field('conserve_main_per_day','Grid Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}</div>${field('conserve_trials_per_day','Trial Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}${field('low_watermark','Low-footage threshold (clips)','number','','min="0" max="365"')}${field('drought_until','No new footage until','date','Clear this date when you are filming again. If your conservation pace still cannot cover the gap, you get an alert.')}<div class="form-row">${field('ntfy_url','ntfy server','url')}${field('ntfy_topic','ntfy topic','text','Use a private topic or an authenticated server.')}</div><label>ntfy access token<input name="ntfy_token" type="password" autocomplete="new-password" placeholder="${state.ntfy_token_set?'Token stored. Leave blank to keep it.':'Optional bearer token'}"></label><button type="button" class="button small" data-action="notify">Send a test notification</button><p class="help">Save changes before testing. Low stock alerts are limited to once per day, failures have durable delivery retries, and post problems include a recovery prompt.</p></section></div></div><div class="save-bar"><button class="primary" type="submit">Save settings ${icon('check')}</button><span>Changes apply to the future queue. Pinned times stay in place.</span></div></form>`;}
 function bindForms(){
  bindCaptionTools();
  const scheduleForm=$('#schedule-form');if(scheduleForm){scheduleForm.addEventListener('input',()=>{scheduleDraft=Object.fromEntries(['preview_days','trials_per_day','main_per_day'].map(k=>[k,scheduleForm.elements.namedItem(k).value]));});scheduleForm.addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{const values=Object.fromEntries(['preview_days','trials_per_day','main_per_day'].map(k=>[k,Number(form.elements.namedItem(k).value)]));await api('/api/settings','PATCH',{values});scheduleDraft=null;toast('Schedule rebuilt. Publishing controls are unchanged.');await refresh();});});}
@@ -240,8 +477,8 @@ function bindForms(){
  const zone=$('#drop-zone');if(zone){zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('dragging');});zone.addEventListener('dragleave',()=>zone.classList.remove('dragging'));zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('dragging');uploadFiles(e.dataTransfer.files);});}
 }
 async function busy(button,fn){if(button)button.disabled=true;try{await fn();}catch(e){toast(e.message,true);}finally{if(button)button.disabled=false;}}
-async function uploadFiles(files){for(let i=0;i<files.length;i++){const f=files[i];toast(`Uploading ${i+1}/${files.length}: ${f.name}`);const fd=new FormData();fd.append('file',f);try{await api('/api/upload','POST',fd);}catch(e){toast(e.message,true);return;}}toast('Footage uploaded. The worker will prepare settled files on its next pass.');location.hash='library';await refresh();}
-function chooseUpload(){let input=document.createElement('input');input.type='file';input.accept='.mp4,.mov,.m4v,.mkv,.webm';input.multiple=true;input.addEventListener('change',()=>uploadFiles(input.files));input.click();}
+async function uploadFiles(files,destination='instagram'){for(let i=0;i<files.length;i++){const f=files[i];toast(`Uploading ${i+1}/${files.length}: ${f.name}`);const fd=new FormData();fd.append('file',f);try{await api(destination==='youtube'?'/api/upload?destination=youtube':'/api/upload','POST',fd);}catch(e){toast(e.message,true);return;}}toast(destination==='youtube'?'Set received. It will appear after intake.':'Footage uploaded. The worker will prepare settled files on its next pass.');location.hash=destination==='youtube'?'youtube':'library';await refresh();}
+function chooseUpload(destination='instagram'){let input=document.createElement('input');input.type='file';input.accept='.mp4,.mov,.m4v,.mkv,.webm';input.multiple=true;input.addEventListener('change',()=>uploadFiles(input.files,destination));input.click();}
 function postNowControl(job){
  if(postingNow(job))return '<p class="notice post-now-tools">Post now requested. Check Activity for the result.</p>';
  if(!['queued','retry'].includes(job.status))return '';
@@ -286,7 +523,7 @@ function coverControls(clip){
  <button type="button" class="button small" id="clip-cover-reset" ${clip.cover_manual_ms==null?'disabled':''}>Use cover setting</button></div>
  <p class="help">Scrub the video to pick a frame, then save footage.</p></section>`;
 }
-async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)return;let coverOverride;$('#editor-title').textContent='Source material';$('#editor-body').innerHTML=`${clipExport(clip)}${canRewrite(clip)?coverControls(clip):''}<p class="editor-name">${esc(clip.name)}</p><form id="clip-form"><label class="field">Facts & context<textarea name="notes" maxlength="3000" placeholder="Only facts the caption writer should know: venue, track, date, what is happening…">${esc(clip.notes)}</textarea></label><label class="field">Caption<textarea name="caption" maxlength="2200" placeholder="Write a caption, or connect AI in Settings.">${esc(clip.caption)}</textarea><span>Manual captions make prepared footage ready. Upcoming posts with edited captions keep their own version.</span></label><label class="toggle field"><span>Exclude this clip from future posting</span><input type="checkbox" name="disabled" ${clip.disabled?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save footage</button><button class="button" type="button" data-regenerate="${clip.id}" ${canRewrite(clip)?'':'disabled'}>${icon('spark')}Rewrite caption</button></div>${clip.error?`<p class="editor-error">${esc(clip.error)}</p>`:''}${clip.status==='error'?`<button type="button" class="button" data-retry-clip="${clip.id}">Retry preparation</button>`:''}</form>`;$('#clip-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{let body={notes:form.elements.notes.value,disabled:form.elements.disabled.checked};if(form.elements.caption.value.trim())body.caption=form.elements.caption.value.trim();if(coverOverride!==undefined)body.cover_manual_ms=coverOverride;await api('/api/clips/'+clip.id,'PATCH',body);$('#editor').close();toast('Footage updated.');await refresh();});});const video=$('#editor .clip-export');
+async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)return;let coverOverride;$('#editor-title').textContent='Source material';$('#editor-body').innerHTML=`${clipExport(clip)}${canRewrite(clip)?coverControls(clip):''}<p class="editor-name">${esc(clip.name)}</p><form id="clip-form"><label class="field">Facts & context<textarea name="notes" maxlength="3000" placeholder="Only facts the caption writer should know: venue, track, date, what is happening…">${esc(clip.notes)}</textarea></label><label class="field">Caption<textarea name="caption" maxlength="2200" placeholder="Write a caption, or connect AI in Settings.">${esc(clip.caption)}</textarea><span>Manual captions make prepared footage ready. Upcoming posts with edited captions keep their own version.</span></label><label class="toggle field"><span>Exclude this clip from future posting</span><input type="checkbox" name="disabled" ${clip.disabled?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save footage</button><button class="button" type="button" data-regenerate="${clip.id}" ${canRewrite(clip)?'':'disabled'}>${icon('spark')}Rewrite caption</button></div>${clip.status==='ready'&&!clip.disabled&&!clip.rebuilding&&clip.duration<=180?`<div class="youtube-drawer-actions"><button type="button" class="button" data-create-short="${clip.id}">${icon('play')}Create YouTube Short draft</button></div>`:''}${clip.error?`<p class="editor-error">${esc(clip.error)}</p>`:''}${clip.status==='error'?`<button type="button" class="button" data-retry-clip="${clip.id}">Retry preparation</button>`:''}</form>`;$('#clip-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{let body={notes:form.elements.notes.value,disabled:form.elements.disabled.checked};if(form.elements.caption.value.trim())body.caption=form.elements.caption.value.trim();if(coverOverride!==undefined)body.cover_manual_ms=coverOverride;await api('/api/clips/'+clip.id,'PATCH',body);$('#editor').close();toast('Footage updated.');await refresh();});});const video=$('#editor .clip-export');
  if(video){
   const label=$('#clip-export-size');
   const pick=$('#clip-cover-pick'), reset=$('#clip-cover-reset'), coverLabel=$('#clip-cover-label'), preview=$('#clip-cover-preview');
@@ -322,6 +559,11 @@ document.addEventListener('click',async e=>{
  const target=e.target.closest('button');if(!target)return;
  if(target.dataset.queueView){queueView=target.dataset.queueView;offset=0;await render();return;}
  if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}
+ if(target.dataset.createShort){await busy(target,async()=>{
+  const result=await api('/api/youtube/shorts','POST',{clip_id:target.dataset.createShort});
+  $('#editor').close();
+  youtubeFocus=result.id;youtubeView='queue';youtubeOffset=0;location.hash='youtube';
+ });return;}
  if(target.dataset.job){await openJob(target.dataset.job);return;}
  if(target.dataset.clip){await openClip(target.dataset.clip);return;}
  if(target.dataset.retryClip){await busy(target,async()=>{await api('/api/clips/'+target.dataset.retryClip+'/retry','POST');$('#editor').close();toast('Preparation will retry on the next worker pass.');await refresh();});return;}
@@ -375,7 +617,13 @@ document.addEventListener('click',async e=>{
  });
 });
 async function start(){try{await loadState();$('#login').hidden=true;$('#shell').hidden=false;await render();}catch(e){if(!state)showLogin();else toast(e.message,true);}}
-icons();start();setInterval(()=>{if(state&&!$('#editor').open&&!(currentPage==='queue'&&scheduleDraft)&&!(currentPage==='library'&&(captionBusy||guidanceDraft!==null||$('#caption-guidance')?.contains(document.activeElement)||$('#caption-selection')?.contains(document.activeElement)||document.activeElement?.matches('[data-caption-select]')))&&['queue','library','activity'].includes(currentPage))refresh().catch(e=>toast(e.message,true));},30000);
+icons();start();setInterval(()=>{if(!state||$('#editor').open)return;
+ if(currentPage==='queue'&&scheduleDraft)return;
+ if(currentPage==='library'&&(captionBusy||guidanceDraft!==null||$('#caption-guidance')?.contains(document.activeElement)||
+  $('#caption-selection')?.contains(document.activeElement)||document.activeElement?.matches('[data-caption-select]')))return;
+ if(currentPage==='youtube'&&($('#content').contains(document.activeElement)||$('#youtube-preferences')?.open||
+  (youtubeData?.connected&&$('#youtube-connection')?.open)))return;
+ if(['queue','library','activity','youtube'].includes(currentPage))refresh().catch(e=>toast(e.message,true));},30000);
 
 window.addEventListener('unhandledrejection',event=>{event.preventDefault();toast(event.reason?.message||'The request could not finish. Check the connection and try again.',true);});
 

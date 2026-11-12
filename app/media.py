@@ -10,6 +10,7 @@ from . import config as c
 from .db import connect, event, settings
 
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.webm'}
+YOUTUBE_SET_FOLDER = 'youtube-sets'
 MEDIA_VERSION = 1
 REBUILD_REQUESTED = -1
 COVER_MODES = ('auto', 'color', 'instagram')
@@ -31,15 +32,18 @@ def digest(path):
             h.update(chunk)
     return h.hexdigest()
 
-def probe(path):
+def video_info(path):
     data = json.loads(run(['ffprobe','-v','error','-show_format','-show_streams','-of','json',str(path)], 60))
-    video = next((x for x in data['streams'] if x['codec_type']=='video'), None)
+    video = next((x for x in data['streams'] if x['codec_type']=='video' and not x.get('disposition',{}).get('attached_pic')), None)
     if not video:
         raise ValueError('No video stream found.')
-    duration = float(data['format'].get('duration', 0))
+    return float(data['format'].get('duration', 0)), video['width'], video['height']
+
+def probe(path):
+    duration, width, height = video_info(path)
     if not 3 <= duration <= 900:
         raise ValueError('Reels must be between 3 seconds and 15 minutes. Trim this clip, then import it again.')
-    return duration, video['width'], video['height']
+    return duration, width, height
 
 def fit_frame(limit):
     # FFmpeg applies display rotation before filtering; account for non-square source pixels too.
@@ -146,25 +150,29 @@ def process(path, clip_id):
         db.execute("UPDATE jobs SET container_id=NULL WHERE clip_id=? AND status IN ('queued','retry','processing')",(clip_id,))
         event('Footage prepared in its original aspect ratio: '+path.name,db=db)
 
+def settled_file(path, now):
+    stat = path.stat()
+    # Observe size and modification time twice so a NAS copy can finish.
+    with connect(True) as db:
+        row = db.execute('SELECT * FROM files WHERE path=?',(str(path),)).fetchone()
+        if not row or row['size']!=stat.st_size or row['mtime']!=stat.st_mtime:
+            db.execute('INSERT OR REPLACE INTO files VALUES(?,?,?,?,0)',(str(path),stat.st_size,stat.st_mtime,now))
+            return None
+        if not row['done'] and now-row['seen_at']>=30:
+            return stat
+
 def scan(now=None):
     now = now or time.time()
     imported = 0
     roots = (c.FOOTAGE, c.DATA/'uploads')
     for root in roots:
         for path in sorted(root.rglob('*')):
-            if path.is_symlink() or not path.is_file() or path.suffix.lower() not in EXTENSIONS or any(x.startswith('.') for x in path.relative_to(root).parts):
+            relative = path.relative_to(root)
+            if relative.parts[0]==YOUTUBE_SET_FOLDER or path.is_symlink() or not path.is_file() or path.suffix.lower() not in EXTENSIONS or any(x.startswith('.') for x in relative.parts):
                 continue
-            stat = path.stat()
-            if stat.st_size > 5_000_000_000:
+            stat = settled_file(path,now)
+            if stat is None or stat.st_size > 5_000_000_000:
                 continue
-            # Observe size AND mtime twice across 30s so NAS copies never ingest halfway.
-            with connect(True) as db:
-                r = db.execute('SELECT * FROM files WHERE path=?',(str(path),)).fetchone()
-                if not r or r['size']!=stat.st_size or r['mtime']!=stat.st_mtime:
-                    db.execute('INSERT OR REPLACE INTO files VALUES(?,?,?,?,0)',(str(path),stat.st_size,stat.st_mtime,now))
-                    continue
-                if r['done'] or now-r['seen_at'] < 30:
-                    continue
             clip_id = digest(path)
             after = path.stat()
             if (after.st_size,after.st_mtime)!=(stat.st_size,stat.st_mtime):
