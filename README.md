@@ -65,7 +65,9 @@ Open **Footage library → Caption guidance** (also available under **Settings �
 
 To update existing captions, tick the clips you want in the **Footage library** and choose **Regenerate selected**. **Select page** selects prepared clips on the current page. **Select all clips** includes every page. Selections carry across pages until you clear them or reload. Use **One-off guidance** for instructions that should take priority just for this selection. Keep the tab open while Reelflow rewrites them one at a time. If a rewrite fails, completed captions stay saved and the rest remain selected for retry. Published posts and individually edited post captions are preserved.
 
-To send one Reel immediately, open its review panel under **Up next** and click **Post now**. Save any caption edits first. The request uses the chosen destination and saved caption, works while the automatic schedule is paused, and requires Dry run to be off. It still follows posting gaps, daily limits and duplicate protection. Check **Activity** for the result; Instagram may need time to process the video.
+To send one Reel immediately, open its review panel under **Up next** and click **Post now**. Save any caption edits first. The request uses the chosen destination and saved caption, works while the automatic schedule is paused, and requires Dry run to be off. It overrides Reelflow’s automatic scheduling, destination and clip exclusions, posting gaps and daily targets. It still requires a ready export, valid Instagram access and duplicate protection. A successful manual post leaves the automatic cadence available, so flexible posts move forward and pinned times stay put. Check **Activity** for the result; Instagram may need time to process the video.
+
+To replace a Reel, open it under **Published**, use **Open on Instagram** to delete or archive it there, then choose **Remove & repost → I removed it — requeue**. Reelflow preserves the previous publication history and creates a new Instagram upload when you use **Post now** again. The requeued Reel needs explicit approval or a Post now request before it can publish.
 
 ## First-time setup: Meta and Instagram
 

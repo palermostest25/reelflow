@@ -22,7 +22,7 @@ from .db import init, connect, settings, secret, event, runtime
 from .planner import plan, conservation, daily_limit, runway_days
 from .security import verify_media
 from . import instagram as ig, ai, media, notifications as ntfy
-from .worker import tick, finish, publish_limit, send_post_now
+from .worker import tick, send_post_now
 
 # Set the shared installation key before constructing session middleware.
 c.bootstrap_runtime()
@@ -390,25 +390,18 @@ def post_now(job_id: int, background: BackgroundTasks):
     now = time.time()
     with connect(True) as db:
         s = settings(db)
-        job = db.execute('SELECT j.*,c.disabled,c.status AS clip_status,c.media_version FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
+        job = db.execute('SELECT j.*,c.status AS clip_status,c.media_version FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
         if not job:
             raise HTTPException(404,'Post not found.')
         if c.DEMO or s['dry_run']:
             raise HTTPException(409,'Turn off Dry run before posting live.')
         if job['status'] not in ('queued','retry') or job['post_now_at']:
             raise HTTPException(409,'This post is already being sent or is no longer ready.')
-        if job['disabled'] or job['clip_status']!='ready' or job['media_version']<media.MEDIA_VERSION or not job['caption'].strip():
+        if job['clip_status']!='ready' or job['media_version']<media.MEDIA_VERSION or not job['caption'].strip():
             raise HTTPException(409,'This Reel needs a ready export and a saved caption.')
-        if not daily_limit(s,job['lane']):
-            raise HTTPException(409,'This posting destination is switched off in Settings.')
         account = db.execute('SELECT expires_at FROM account WHERE id=1').fetchone()
         if not account or account['expires_at']<=now or not c.PUBLIC_URL.startswith('https://'):
             raise HTTPException(409,'Connect Instagram and configure public HTTPS before posting.')
-        if db.execute("SELECT 1 FROM jobs WHERE post_now_at IS NOT NULL AND status IN ('queued','retry','processing','publishing')").fetchone():
-            raise HTTPException(409,'Another Post now request is in progress. Check Activity.')
-        blocked = publish_limit(db,s,job,now,manual=True)
-        if blocked:
-            raise HTTPException(409,blocked)
         db.execute("UPDATE jobs SET post_now_at=?,next_attempt=0,error='' WHERE id=?",(now,job_id))
         event('Post now requested for '+job['lane']+' Reel.',job_id=job_id,db=db)
     background.add_task(send_post_now,job_id)
@@ -431,9 +424,14 @@ def job_action(job_id: int, body: JobAction):
         elif body.action=='confirm_posted' and job['status']=='uncertain':
             if body.media_id and not re.fullmatch(r'\d{5,40}',body.media_id):
                 raise HTTPException(422,'Instagram media ID must be numeric.')
-            db.execute("UPDATE jobs SET status='published',media_id=?,published_at=?,error='',post_now_at=NULL WHERE id=?",(body.media_id or None,time.time(),job_id))
+            db.execute("UPDATE jobs SET status='published',media_id=?,published_at=?,error='' WHERE id=?",(body.media_id or None,time.time(),job_id))
             if body.media_id:
                 db.execute("INSERT OR IGNORE INTO history(media_id,caption,media_type,timestamp,origin,lane) VALUES(?,?,'REELS',?,'reelflow',?)",(body.media_id,job['caption'],time.time(),job['lane']))
+        elif body.action=='confirm_removed' and job['status']=='published':
+            # The user removed it on Instagram. Keep the old history record, but never reuse its container.
+            db.execute("""UPDATE jobs SET status='queued',approved=0,pinned=0,scheduled_at=NULL,container_id=NULL,
+                media_id=NULL,permalink=NULL,published_at=NULL,publish_started=NULL,post_now_at=NULL,
+                attempts=0,next_attempt=0,error='' WHERE id=?""",(job_id,))
         else:
             raise HTTPException(409,'Action is not available in the current post state.')
         event('Post action: '+body.action,'info',job_id,db)

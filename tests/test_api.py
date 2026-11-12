@@ -43,17 +43,31 @@ def test_post_now_requires_live_mode_and_queues_only_the_chosen_post(client,monk
     plan()
     with connect(True) as db:
         db.execute('UPDATE clips SET media_version=?',(media.MEDIA_VERSION,))
-        first, second = [r['id'] for r in db.execute("SELECT id FROM jobs WHERE lane='main' ORDER BY id")]
+        first = db.execute("SELECT id FROM jobs WHERE lane='main' ORDER BY id").fetchone()[0]
     sent=[]
     monkeypatch.setattr(main,'send_post_now',sent.append)
     assert client.post(f'/api/jobs/{first}/post-now',headers=h).status_code==409
-    set_settings(dry_run=False)
+    set_settings(dry_run=False,main_per_day=0)
     assert client.post(f'/api/jobs/{first}/post-now',headers=h).status_code==200
-    assert client.post(f'/api/jobs/{second}/post-now',headers=h).status_code==409
+    assert client.post(f'/api/jobs/{first}/post-now',headers=h).status_code==409
     assert sent==[first]
     assert client.get('/api/state').json()['settings']['paused'] is True
     with connect() as db:
         assert [tuple(r) for r in db.execute('SELECT id,approved FROM jobs WHERE post_now_at IS NOT NULL')]==[(first,0)]
+
+def test_removed_reel_requeues_without_approval_or_old_instagram_container(client):
+    h=auth(client)
+    clip=seed(1)[0]
+    with connect(True) as db:
+        job=db.execute("INSERT INTO jobs(clip_id,lane,status,caption,published_at,media_id,container_id,post_now_at) VALUES(?,'main','published','Saved caption',?,'12345','old-container',?)",(clip,time.time(),time.time())).lastrowid
+        db.execute("INSERT INTO history(media_id,caption) VALUES('12345','Saved caption')")
+    path=f'/api/jobs/{job}/action'
+    assert client.post(path,headers=h,json={'action':'confirm_removed'}).status_code==200
+    assert client.post(path,headers=h,json={'action':'confirm_removed'}).status_code==409
+    with connect() as db:
+        saved=db.execute('SELECT status,approved,caption,media_id,container_id,post_now_at FROM jobs WHERE id=?',(job,)).fetchone()
+        assert tuple(saved)==('queued',0,'Saved caption',None,None,None)
+        assert db.execute("SELECT caption FROM history WHERE media_id='12345'").fetchone()[0]=='Saved caption'
 
 def test_auth_csrf_and_login_rate_limit(client):
     assert client.get('/api/state').status_code==401

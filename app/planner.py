@@ -93,7 +93,8 @@ def plan(now=None):
             cap = daily_limit(s, lane, interval)
             if not cap:
                 continue
-            fixed = db.execute("SELECT clip_id,scheduled_at,published_at FROM jobs WHERE lane=? AND (status='published' OR (pinned=1 AND status IN ('queued','retry')) OR status IN ('processing','publishing','uncertain'))", (lane,)).fetchall()
+            # Post now is extra to the scheduled cadence, so its slot can be filled again.
+            fixed = db.execute("SELECT clip_id,scheduled_at,published_at FROM jobs WHERE lane=? AND ((status='published' AND post_now_at IS NULL) OR (pinned=1 AND status IN ('queued','retry')) OR status IN ('processing','publishing','uncertain'))", (lane,)).fetchall()
             fixed = list(fixed) + [j for j in jobs if j['lane']==lane and j['id'] in protected and not j['pinned']]
             occupied = [r['published_at'] or r['scheduled_at'] for r in fixed if r['published_at'] or r['scheduled_at']]
             rank = lambda j: hashlib.sha256((seed + lane + j['clip_id']).encode()).hexdigest()

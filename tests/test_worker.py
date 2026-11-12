@@ -46,12 +46,13 @@ def test_rebuild_requested_during_upload_holds_publish(job,monkeypatch):
     assert row(job)['status']=='processing'
 
 def test_post_now_publishes_only_requested_reel_while_paused(job,monkeypatch):
-    set_settings(paused=True)
+    set_settings(paused=True,trials_enabled=False)
     other_clip=seed(1,prefix='other')[0]
     now=time.time()
     with connect(True) as db:
         db.execute('UPDATE clips SET media_version=?',(worker.media.MEDIA_VERSION,))
         db.execute('UPDATE jobs SET post_now_at=?,approved=0,scheduled_at=? WHERE id=?',(now,now+86400,job))
+        db.execute('UPDATE clips SET disabled=1 WHERE id=(SELECT clip_id FROM jobs WHERE id=?)',(job,))
         other=db.execute("INSERT INTO jobs(clip_id,lane,caption,scheduled_at) VALUES(?,'main','Other caption',?)",(other_clip,now-60)).lastrowid
     for name in ('refresh_token','sync_history','sync_metrics'):
         monkeypatch.setattr(ig,name,lambda:None)
@@ -60,8 +61,30 @@ def test_post_now_publishes_only_requested_reel_while_paused(job,monkeypatch):
     sent=[]
     monkeypatch.setattr(ig,'publish',lambda *args:sent.append(args) or '98765')
     worker.tick()
-    assert row(job)['status']=='published' and row(job)['post_now_at'] is None
+    assert row(job)['status']=='published' and row(job)['post_now_at']==now
     assert row(other)['status']=='queued' and len(sent)==1
+
+def test_post_now_fills_the_freed_slot_and_does_not_spend_the_scheduled_quota(job,monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now=datetime(2026,10,20,8,tzinfo=ZoneInfo('Australia/Perth')).timestamp()
+    monkeypatch.setattr(worker.time,'time',lambda:now)
+    seed(1,prefix='other')
+    set_settings(learn_timing=False,min_gap_days=0,main_per_day=1)
+    with connect(True) as db:
+        db.execute("UPDATE jobs SET lane='main',scheduled_at=NULL WHERE id=?",(job,))
+        db.execute('UPDATE clips SET media_version=?',(worker.media.MEDIA_VERSION,))
+    worker.plan(now)
+    with connect(True) as db:
+        first, next_job=db.execute("SELECT id,scheduled_at FROM jobs WHERE lane='main' ORDER BY scheduled_at").fetchall()
+        db.execute('UPDATE jobs SET post_now_at=? WHERE id=?',(now,first['id']))
+    sent=[]
+    monkeypatch.setattr(ig,'publish',lambda *a:sent.append(a) or str(len(sent)))
+    worker.send_post_now(first['id'])
+    assert row(first['id'])['status']=='published'
+    assert row(next_job['id'])['scheduled_at']==first['scheduled_at']
+    worker.advance(next_job['id'],first['scheduled_at'])
+    assert row(next_job['id'])['status']=='published' and len(sent)==2
 
 def test_ambiguous_publish_never_blind_retries(job,monkeypatch):
     calls=[]
