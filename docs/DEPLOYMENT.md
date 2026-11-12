@@ -71,7 +71,9 @@ The container runs as UID/GID 1000. Grant that identity read/traverse access to 
 
 The footage mount is read-only; originals are never modified. Browser uploads, processed videos, thumbnails, the database and installation credentials live in `reelflow-data`, a named Docker volume managed automatically. To use a local TrueNAS application-state dataset instead, replace `reelflow-data:/data` with a host path and make it writable by the container identity. Keep `/data` on local storage, not an SMB/NFS share, because SQLite WAL needs reliable local locking. The footage source can be a mounted share.
 
-You can also upload footage through the UI. Inputs up to 5 GB are accepted; publishable clips must be 3 seconds to 15 minutes. Prepared output is 1080×1920 H.264/AAC with a 1 GB cap, letterboxed to preserve the frame, with source sound retained. Allow room for originals, converted clips and previews.
+You can also upload footage through the UI. Inputs up to 5 GB are accepted; publishable clips must be 3 seconds to 15 minutes. Prepared output is H.264/AAC with a 1 GB cap, a longest side of up to 1920 pixels, and the original display aspect ratio and audio. Reelflow does not add bars or crop the picture. Bars already in the source remain part of the video, and Instagram can still frame the player differently across placements. [Meta's Reel publishing specs](https://www.postman.com/meta/instagram/folder/830j7my/reels-publishing).
+
+On upgrade, the worker rebuilds older padded exports for upcoming posts from the original files. Keep those files at their import locations. Check the updated clip preview while paused before resuming. Captions, approvals and pinned times are retained; already published Reels cannot be reframed by an app update. If the source is missing, restore it and choose **Retry preparation** in the clip editor.
 
 ## Captions, notifications and first posts
 

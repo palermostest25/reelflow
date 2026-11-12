@@ -11,6 +11,7 @@ def job(monkeypatch):
     set_settings(paused=False,dry_run=False,conserve=False)
     now=time.time()
     with connect(True) as db:
+        db.execute('UPDATE clips SET media_version=? WHERE id=?',(worker.media.MEDIA_VERSION,cid))
         job_id=db.execute("INSERT INTO jobs(clip_id,lane,caption,scheduled_at) VALUES(?,'trial','Test caption',?)",(cid,now-30)).lastrowid
     monkeypatch.setattr(ig,'create_container',lambda *a:'container-1')
     monkeypatch.setattr(ig,'container_status',lambda *a:'FINISHED')
@@ -27,6 +28,12 @@ def test_success_once_only(job,monkeypatch):
     worker.advance(job,time.time())
     assert len(calls)==1 and row(job)['status']=='published'
     with connect() as db:assert db.execute('SELECT lane FROM history').fetchone()[0]=='trial'
+
+def test_old_encode_waits_for_rebuild_before_publishing(job,monkeypatch):
+    with connect(True) as db:db.execute('UPDATE clips SET media_version=0')
+    monkeypatch.setattr(ig,'create_container',lambda *a:pytest.fail('Must not upload a padded encode'))
+    worker.advance(job,time.time())
+    assert row(job)['status']=='queued'
 
 def test_ambiguous_publish_never_blind_retries(job,monkeypatch):
     calls=[]

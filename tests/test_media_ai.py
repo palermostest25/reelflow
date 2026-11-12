@@ -7,9 +7,10 @@ from app.db import connect
 from conftest import seed
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'),reason='ffmpeg required')
-def test_actual_video_intake_conversion_and_duplicate_hashing():
+@pytest.mark.parametrize('size', [(320,180),(180,320),(320,320)])
+def test_actual_video_intake_conversion_and_duplicate_hashing(size):
     path=c.FOOTAGE/'sample.mp4'
-    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=blue:s=180x320:d=3.1','-c:v','libx264','-pix_fmt','yuv420p',str(path)],check=True)
+    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i',f'color=c=blue:s={size[0]}x{size[1]}:d=3.1','-c:v','libx264','-pix_fmt','yuv420p',str(path)],check=True)
     now=time.time()
     assert media.scan(now)==0
     assert media.scan(now+31)==1
@@ -17,11 +18,29 @@ def test_actual_video_intake_conversion_and_duplicate_hashing():
     assert r['status']=='captioning' and r['duration']>=3
     assert (c.DATA/'media'/(r['id']+'.mp4')).exists()
     assert (c.DATA/'thumbs'/(r['id']+'.jpg')).exists()
-    assert media.probe(c.DATA/'media'/(r['id']+'.mp4'))[1:]==(1080,1920)
+    assert media.probe(c.DATA/'media'/(r['id']+'.mp4'))[1:]==size
     shutil.copyfile(path,c.FOOTAGE/'duplicate.mov')
     media.scan(now+40)
     assert media.scan(now+80)==0
     with connect() as db:assert db.execute('SELECT COUNT(*) FROM clips').fetchone()[0]==1
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'),reason='ffmpeg required')
+def test_rebuild_uses_original_without_replacing_captions_or_pinned_time():
+    source=c.FOOTAGE/'landscape.mp4'
+    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=blue:s=320x180:d=3.1','-c:v','libx264',str(source)],check=True)
+    cid=media.digest(source)
+    cached=c.DATA/'media'/(cid+'.mp4')
+    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-i',str(source),'-vf','pad=320:568:0:(oh-ih)/2','-c:v','libx264',str(cached)],check=True)
+    now=time.time()
+    with connect(True) as db:
+        db.execute("INSERT INTO clips(id,name,source,created_at,status,caption) VALUES(?,?,?,?,'ready','Saved clip caption')",(cid,source.name,str(source),now))
+        db.execute("INSERT INTO jobs(clip_id,lane,status,scheduled_at,pinned,caption,container_id) VALUES(?,'main','processing',?,1,'Edited post caption','old-container')",(cid,now+3600))
+    media.scan(now)
+    assert media.probe(cached)[1:]==(320,180)
+    assert media.digest(source)==cid
+    with connect() as db:
+        assert tuple(db.execute('SELECT status,caption,media_version FROM clips').fetchone())==('ready','Saved clip caption',media.MEDIA_VERSION)
+        assert tuple(db.execute('SELECT scheduled_at,pinned,caption,container_id FROM jobs').fetchone())==(now+3600,1,'Edited post caption',None)
 
 def test_missing_ai_key_never_creates_placeholder():
     cid=seed(1,status='captioning')[0]

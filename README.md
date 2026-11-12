@@ -9,7 +9,7 @@ Start with [Docker deployment](#run-it-one-container-one-compose-file), follow t
 ## What it does
 
 - Watches a read-only footage folder, including a TrueNAS dataset or mounted share. Also accepts browser uploads.
-- Waits for files to settle, deduplicates by SHA-256, validates video, prepares 1080×1920 H.264/AAC MP4s, and generates previews. Original footage stays untouched. Nonvertical footage is letterboxed rather than cropped.
+- Waits for files to settle, deduplicates by SHA-256, validates video, prepares H.264/AAC MP4s and previews in the source aspect ratio, up to 1920 pixels on the longest side. Landscape stays landscape and portrait stays portrait, without added black bars or crops. Original footage stays untouched.
 - Writes one- or two-sentence captions from three silent video frames, account context, operator notes, and up to 30 previous captions with available engagement counts. OpenRouter OAuth PKCE or an OpenAI-compatible API key; choose an actual model from the live catalog.
 - Creates **one regular Reel and one Trial Reel per unique clip**. Regular Reels share to feed; Trials use `trial_params.graduation_strategy=MANUAL` and never silently fall back to regular Reels. No automatic Trial graduation.
 - Schedules up to five Trial Reels and one grid Reel daily by default. Both daily limits (0–10), the preview length (1–90 days), posting window and timing learning are editable in the UI. Conservation has its own editable cadence and daily counts; its defaults are one post per lane every second day. Normal cadence returns when sufficient new footage arrives.

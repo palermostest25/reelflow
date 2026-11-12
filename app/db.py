@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS clips (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL, created_at REAL NOT NULL,
  duration REAL DEFAULT 0, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0,
  status TEXT NOT NULL DEFAULT 'processing', error TEXT DEFAULT '', notes TEXT DEFAULT '',
+ media_version INTEGER NOT NULL DEFAULT 0,
  caption TEXT DEFAULT '', caption_source TEXT DEFAULT '', category TEXT DEFAULT '', disabled INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS jobs (
@@ -58,6 +59,9 @@ def init():
     with connect() as db:
         db.execute('PRAGMA journal_mode=WAL')
         db.executescript(SCHEMA)
+    with connect(True) as db:
+        if not any(row['name']=='media_version' for row in db.execute('PRAGMA table_info(clips)')):
+            db.execute('ALTER TABLE clips ADD COLUMN media_version INTEGER NOT NULL DEFAULT 0')
         db.execute('INSERT OR IGNORE INTO settings VALUES(1,?)', (json.dumps(c.DEFAULTS),))
 
 def settings(db=None):

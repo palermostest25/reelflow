@@ -5,10 +5,12 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from . import config as c
 from .db import connect, event
 
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.webm'}
+MEDIA_VERSION = 1
 
 def run(args, timeout=1800):
     result = subprocess.run(args, capture_output=True, timeout=timeout)
@@ -33,26 +35,40 @@ def probe(path):
         raise ValueError('Reels must be between 3 seconds and 15 minutes. Trim this clip, then import it again.')
     return duration, video['width'], video['height']
 
+def fit_frame(limit):
+    # FFmpeg applies display rotation before filtering; account for non-square source pixels too.
+    width = 'iw*if(gt(sar,0),sar,1)'
+    factor = f'min(1,{limit}/max({width},ih))'
+    return f"scale=w='max(2,trunc({width}*{factor}/2)*2)':h='max(2,trunc(ih*{factor}/2)*2)',setsar=1"
+
 def process(path, clip_id):
-    target = c.DATA / 'media' / (clip_id + '.mp4')
-    temp = target.with_suffix('.tmp.mp4')
     duration, width, height = probe(path)
-    # Letterbox instead of cropping out people, decks, or equipment. Preserve source audio.
-    run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
-         '-vf','scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1',
-         '-r','30','-c:v','libx264','-preset','veryfast','-crf','22','-maxrate','12M','-bufsize','24M','-pix_fmt','yuv420p',
-         '-c:a','aac','-b:a','128k','-ar','48000','-movflags','+faststart','-threads','2',str(temp)])
-    if temp.stat().st_size > 1_000_000_000:
-        temp.unlink()
-        raise ValueError('Converted clip exceeds Instagram\'s 1 GB limit.')
-    os.replace(temp, target)
-    for i, fraction in enumerate((.15,.5,.85)):
-        frame = c.DATA / 'frames' / (clip_id + '-' + str(i) + '.jpg')
-        run(['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',str(duration*fraction),'-i',str(target),'-frames:v','1','-vf','scale=360:640','-threads','1',str(frame)], 60)
-    shutil.copyfile(c.DATA/'frames'/(clip_id+'-1.jpg'), c.DATA/'thumbs'/(clip_id+'.jpg'))
+    with TemporaryDirectory(prefix='.encode-',dir=c.DATA) as workspace:
+        temp = Path(workspace) / (clip_id + '.mp4')
+        run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
+             '-vf',fit_frame(1920),'-r','30','-c:v','libx264','-preset','veryfast','-crf','22',
+             '-maxrate','12M','-bufsize','24M','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-ar','48000',
+             '-movflags','+faststart','-threads','2',str(temp)])
+        if temp.stat().st_size > 1_000_000_000:
+            raise ValueError('Converted clip exceeds Instagram\'s 1 GB limit.')
+        frames = []
+        for i, fraction in enumerate((.15,.5,.85)):
+            frame = temp.parent / f'{clip_id}-{i}.jpg'
+            run(['ffmpeg','-hide_banner','-loglevel','error','-y','-ss',str(duration*fraction),'-i',str(temp),'-frames:v','1','-vf',fit_frame(640),'-threads','1',str(frame)], 60)
+            frames.append(frame)
+        thumb = temp.with_suffix('.jpg')
+        shutil.copyfile(frames[1],thumb)
+        for frame in frames:
+            os.replace(frame,c.DATA/'frames'/frame.name)
+        os.replace(thumb,c.DATA/'thumbs'/thumb.name)
+        os.replace(temp,c.DATA/'media'/temp.name)
     with connect(True) as db:
-        db.execute("UPDATE clips SET status='captioning',duration=?,width=?,height=?,error='' WHERE id=?", (duration,width,height,clip_id))
-    event('Footage prepared: '+path.name)
+        db.execute("""UPDATE clips SET media_version=?,duration=?,width=?,height=?,error='',
+            status=CASE WHEN status!='processing' THEN status WHEN caption!='' THEN 'ready' ELSE 'captioning' END
+            WHERE id=?""", (MEDIA_VERSION,duration,width,height,clip_id))
+        # A pending Instagram container still points at the old encode.
+        db.execute("UPDATE jobs SET container_id=NULL WHERE clip_id=? AND status IN ('queued','retry','processing')",(clip_id,))
+        event('Footage prepared in its original aspect ratio: '+path.name,db=db)
 
 def scan(now=None):
     now = now or time.time()
@@ -85,12 +101,21 @@ def scan(now=None):
                 db.execute('INSERT INTO clips(id,name,source,created_at) VALUES(?,?,?,?)',(clip_id,path.name,str(path),now))
             imported += 1
             event('New footage found: '+path.name)
-    # Recover interrupted conversions using the recorded source path.
+    # Rebuild legacy exports from the original, never from the already padded copy.
     with connect() as db:
-        pending = db.execute("SELECT * FROM clips WHERE status='processing' LIMIT 4").fetchall()
+        pending = db.execute("""SELECT c.* FROM clips c WHERE
+            NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status IN ('publishing','uncertain'))
+            AND (c.status='processing' OR (c.media_version<? AND c.disabled=0
+                AND c.status IN ('ready','captioning','needs_caption')
+                AND (NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id)
+                    OR EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status NOT IN ('published','rejected')))))
+            ORDER BY COALESCE((SELECT MIN(j.scheduled_at) FROM jobs j WHERE j.clip_id=c.id
+                AND j.status IN ('queued','retry','processing')),1e20), c.created_at LIMIT 4""", (MEDIA_VERSION,)).fetchall()
     for clip in pending:
         try:
             path = Path(clip['source'])
+            if not path.is_file():
+                raise ValueError('Original footage is missing. Restore it to its import location, then retry preparation.')
             if digest(path) != clip['id']:
                 raise ValueError('Source changed after import. Restore the original or import the updated clip.')
             process(path,clip['id'])

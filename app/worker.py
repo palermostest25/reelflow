@@ -53,7 +53,7 @@ def mark_uncertain(job, message):
 
 def advance(job_id, now):
     with connect() as db:
-        job = db.execute('SELECT j.*,c.disabled,c.status AS clip_status FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
+        job = db.execute('SELECT j.*,c.disabled,c.media_version,c.status AS clip_status FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
         account = db.execute('SELECT * FROM account WHERE id=1').fetchone()
     s = settings()
     if s['paused'] or s['dry_run'] or c.DEMO or not account or not job or job['disabled'] or job['clip_status']!='ready':
@@ -82,6 +82,8 @@ def advance(job_id, now):
         if job['status']=='publishing':
             mark_uncertain(job,'Instagram publishing response is unresolved. Automatic retries are stopped to prevent a duplicate.')
         return
+    if job['media_version'] < media.MEDIA_VERSION:
+        return  # The scanner must rebuild the old export before sending it to Instagram.
     try:
         if not job['container_id']:
             with connect(True) as db:
