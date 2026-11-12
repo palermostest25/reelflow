@@ -14,8 +14,8 @@ MEDIA_VERSION = 1
 REBUILD_REQUESTED = -1
 COVER_MODES = ('auto', 'color', 'instagram')
 EXPORT_QUALITIES = {
-    'standard': ('22', '12M', '24M', '128k'),
-    'detail': ('18', '20M', '25M', '192k'),
+    'standard': ('22', '12M', '24M'),
+    'detail': ('18', '20M', '25M'),
 }
 
 def run(args, timeout=1800):
@@ -116,12 +116,12 @@ def backfill_covers():
 
 def process(path, clip_id):
     duration, width, height = probe(path)
-    crf, bitrate, buffer, audio = EXPORT_QUALITIES[settings()['export_quality']]
+    crf, bitrate, buffer = EXPORT_QUALITIES[settings()['export_quality']]
     with TemporaryDirectory(prefix='.encode-',dir=c.DATA) as workspace:
         temp = Path(workspace) / (clip_id + '.mp4')
         run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
              '-vf',fit_frame(1920),'-r','30','-c:v','libx264','-preset','veryfast','-crf',crf,
-             '-maxrate',bitrate,'-bufsize',buffer,'-pix_fmt','yuv420p','-c:a','aac','-b:a',audio,'-ar','48000',
+             '-maxrate',bitrate,'-bufsize',buffer,'-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-ar','48000',
              '-movflags','+faststart','-threads','2',str(temp)])
         if temp.stat().st_size > 1_000_000_000:
             raise ValueError('Converted clip exceeds Instagram\'s 1 GB limit.')
