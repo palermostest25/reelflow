@@ -414,18 +414,26 @@ def clip_edit(clip_id: str, body: ClipEdit):
     plan()
     return {'ok':True}
 
+class CaptionRewrite(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    instructions: str = Field(default='',max_length=4000)
+
 @app.post('/api/clips/{clip_id}/regenerate')
-def regenerate(clip_id: str):
+def regenerate(clip_id: str, body: CaptionRewrite = None):
     with connect() as db:
         clip = db.execute('SELECT * FROM clips WHERE id=?',(clip_id,)).fetchone()
     if not clip or clip['status'] in ('processing','error'):
         raise HTTPException(409,'Wait for footage processing to finish first.')
+    s = settings()
+    if body and body.instructions.strip():
+        s['caption_instructions'] += ('\n\nFor this rewrite only, these directions take priority over the saved style guidance above:\n'
+                                      + body.instructions.strip())
     try:
-        caption,category = ai.generate(clip,settings())
+        caption,category = ai.generate(clip,s)
     except ai.CaptionError as exc:
         raise HTTPException(502,str(exc))
     with connect(True) as db:
-        db.execute("UPDATE clips SET caption=?,category=?,status='ready',error='',caption_source=? WHERE id=?",(caption,category,settings()['ai_model'],clip_id))
+        db.execute("UPDATE clips SET caption=?,category=?,status='ready',error='',caption_source=? WHERE id=?",(caption,category,s['ai_model'],clip_id))
         db.execute("UPDATE jobs SET caption=?,container_id=NULL WHERE clip_id=? AND caption_locked=0 AND status IN ('queued','retry')",(caption,clip_id))
         event('Caption regenerated for '+clip['name'],db=db)
     runtime('caption_retry_at',0)

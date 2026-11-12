@@ -117,3 +117,19 @@ def test_successful_caption_rewrite_resumes_the_waiting_batch(client,monkeypatch
     with connect() as db:
         assert db.execute('SELECT status FROM clips WHERE id=?',(cid,)).fetchone()[0]=='ready'
         assert db.execute('SELECT COUNT(*) FROM jobs WHERE clip_id=?',(cid,)).fetchone()[0]==2
+
+
+def test_one_off_caption_guidance_does_not_change_saved_guidance(client,monkeypatch):
+    from app import ai
+    h=auth(client);cid=seed(1)[0]
+    assert client.patch('/api/settings',headers=h,json={'values':{'caption_instructions':'Use lowercase.'}}).status_code==200
+    received=[]
+    def generate(clip,s):
+        received.append(s['caption_instructions'])
+        return 'A fresh caption.','DJ performance'
+    monkeypatch.setattr(ai,'generate',generate)
+    path='/api/clips/'+cid+'/regenerate'
+    assert client.post(path,headers=h,json={'instructions':'Use title case this time.'}).status_code==200
+    assert client.post(path,headers=h).status_code==200
+    assert received[0].startswith('Use lowercase.') and received[0].endswith('Use title case this time.')
+    assert received[1]=='Use lowercase.'

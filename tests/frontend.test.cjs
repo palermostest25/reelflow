@@ -32,7 +32,7 @@ async function loginPage() {
   form.elements = {password: {value: 'test-only-password'}};
   form.resets = 0;
   form.reset = () => { form.resets++; form.elements.password.value = ''; };
-  const page = {form, error: document.querySelector('#login-error'), starts: 0, requests: []};
+  const page = {context, form, error: document.querySelector('#login-error'), starts: 0, requests: []};
   context.testApi = (path, method, body) => {
     page.requests.push({path, method, body});
     return new Promise((resolve, reject) => { page.accept = resolve; page.reject = reject; });
@@ -60,6 +60,31 @@ test('successful delayed login opens the desk without refreshing or showing an e
   assert.equal(page.error.textContent, '');
   assert.equal(page.form.resets, 1);
   assert.equal(page.starts, 1);
+});
+
+test('bulk rewrite sends one-off guidance only to selected clips and keeps the unfinished selection', async () => {
+  const {context} = await loginPage();
+  const requests = [];
+  context.rewriteApi = async (path, method, body) => {
+    requests.push({path, method, instructions: body.instructions});
+    if (requests.length===2) throw new Error('Provider rate limited');
+    return {caption: 'New caption'};
+  };
+  const remaining = await vm.runInContext(`
+    state = {settings: {}};
+    currentPage = 'library';
+    records = [{id:'first'}, {id:'unselected'}, {id:'second'}, {id:'third'}];
+    selectedClips.set('first','First').set('second','Second').set('third','Third');
+    batchGuidance = 'Keep it playful.';
+    api = rewriteApi;
+    captionControls = () => {};
+    refresh = async () => {};
+    regenerateSelected().then(() => [...selectedClips.keys()].join(','));
+  `, context);
+  assert.equal(remaining, 'second,third');
+  assert.deepEqual(requests, ['first','second'].map(id=>({
+    path: '/api/clips/'+id+'/regenerate', method: 'POST', instructions: 'Keep it playful.',
+  })));
 });
 
 test('rejected login preserves the input and allows a successful retry', async () => {

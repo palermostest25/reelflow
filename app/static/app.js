@@ -5,6 +5,8 @@ const paths={list:'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',film:'M4 3
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.film}"/></svg>`;
 function icons(){document.querySelectorAll('[data-icon]').forEach(el=>el.innerHTML=icon(el.dataset.icon));}
 let state, currentPage='', filter='all', offset=0, toastTimer, records=[], renderVersion=0, queueView='schedule', scheduleDraft=null;
+const selectedClips=new Map();
+let guidanceDraft=null, guidanceOpen=false, batchGuidance='', captionBusy=false, captionProgress='', captionFailed=false;
 const titles={queue:'Up next',library:'Footage library',history:'Published',insights:'Audience & voice',activity:'Activity log',settings:'Settings'};
 async function api(path, method='GET', data){
  const headers={}; if(state?.csrf)headers['X-CSRF-Token']=state.csrf;
@@ -52,9 +54,12 @@ async function render(){
   html+=`<p class="queue-note">New footage mixes into flexible slots. Pinned times and edited captions stay in place. Trials stay Trials; automatic sharing to followers is off.</p></section><aside class="operating-summary"><section class="side-section"><h3>Footage runway</h3><div class="runway-figure">${state.runway_days}<span>days, approximately</span></div><p>${s.main_per_day?state.main_remaining:state.trial_remaining} unposted ${s.main_per_day?'grid':'Trial'} Reels. ${state.interval>1?'The conservation pace is active.':'At your configured posting pace.'}</p><div class="stock-track">${Array.from({length:14},(_,i)=>`<b class="${i<state.runway_days?'':'empty'}"></b>`).join('')}</div><a href="#settings" class="button small">Change the posting rhythm ${icon('arrow')}</a></section><section class="side-section"><h3>Two different audiences</h3><p><strong>Trials:</strong> Instagram tests these with non-followers first. They stay off your profile grid unless you share them to everyone in Instagram.</p><p class="help"><strong>Grid:</strong> regular Reels shared to your profile and feed, visible to followers and discovery audiences.</p><p class="help">A follower can still encounter a Trial through a direct share or an audio page.</p></section><section class="side-section"><h3>Make the captions yours</h3><p>Set tone, phrases to avoid, hashtags and other instructions for your caption model.</p><a href="#settings" class="button small">Edit caption instructions ${icon('arrow')}</a></section></aside></div>`;
  }
  if(currentPage==='library'){
-  records=await api(`/api/clips?offset=${offset}&limit=50`);html=header('The source material.','Drop footage in your watched folder, or upload it here. We’ll take it from there.',`<button class="button" data-action="scan">${icon('refresh')}Scan folder</button>${uploadButton}`);
+  const clips=await api(`/api/clips?offset=${offset}&limit=50`);
+  if(version!==renderVersion)return;
+  records=clips;html=header('The source material.','Drop footage in your watched folder, or upload it here. We’ll take it from there.',`<button class="button" data-action="scan">${icon('refresh')}Scan folder</button>${uploadButton}`);
   html+=`<div class="notice"><p>Watching <code>${esc(state.footage_path)}</code>. Files are deduplicated by content. Originals in this folder are never modified.</p></div>`;
-  html+=records.length?`<div class="footage-grid">${records.map(clip=>`<article class="clip-card"><button class="clip-poster" data-clip="${clip.id}" aria-label="Review ${esc(clip.name)}">${['processing','error'].includes(clip.status)?icon('film'):`<img src="/api/preview/${clip.id}" alt="" loading="lazy">`}${badge(clip.disabled?'Excluded':({ready:'Ready to rotate',captioning:'Writing caption',needs_caption:'Needs a caption',processing:'Preparing',error:'Needs attention'}[clip.status]||clip.status),clip.status==='ready'&&!clip.disabled?'green':'rust')}<span class="clip-duration">${Math.round(clip.duration)}s</span></button><h3>${esc(clip.name)}</h3><p>${esc(clip.category||clip.caption_source||'Waiting for preparation')}</p></article>`).join('')}</div>`+pager(records.length):empty('Start with the good stuff.','Set your watched folder in Docker, then drop in your clips. Or upload a few here to try the workflow.',uploadButton);
+  html+=captionTools();
+  html+=records.length?`<div class="footage-grid">${records.map(clipCard).join('')}</div>`+pager(records.length):empty('Start with the good stuff.','Set your watched folder in Docker, then drop in your clips. Or upload a few here to try the workflow.',uploadButton);
   html+=`<div id="drop-zone" class="drop-zone">${icon('upload')}<strong>Drop footage here</strong><p>MP4, MOV, M4V, MKV or WebM · up to 5 GB per input</p><button class="button small" data-action="upload">Browse files</button><p id="upload-progress" role="status"></p></div>`;
  }
  if(currentPage==='history'){
@@ -77,6 +82,129 @@ async function render(){
 function scheduleControls(){const s={...state.settings,...scheduleDraft};return `<form id="schedule-form" class="schedule-controls"><label>Preview days<input name="preview_days" type="number" min="1" max="90" required value="${s.preview_days}"></label><label>Trial Reels / day<input name="trials_per_day" type="number" min="0" max="10" required value="${s.trials_per_day}"></label><label>Grid Reels / day<input name="main_per_day" type="number" min="0" max="10" required value="${s.main_per_day}"></label><button class="primary" type="submit">${icon('clock')}Save & build schedule</button><a href="#settings" class="text-button">Timing & caption options</a><p>Set either daily count to 0 to stop that destination. Building the schedule does not resume publishing.${state.settings.trials_enabled?'':' Trial publishing is also switched off in Settings.'}</p></form>`;}
 function schedulePost(j){const off=j.lane==='main'?!state.settings.main_per_day:!state.settings.trials_enabled||!state.settings.trials_per_day;const status=j.status==='published'?'Published':off?'Destination switched off':!j.approved?'Needs approval':({queued:'Ready',retry:'Retry pending',processing:'Preparing to publish',publishing:'Publishing',uncertain:'Check Instagram',failed:'Needs attention'}[j.status]||j.status);return `<button type="button" class="schedule-post" data-job="${j.id}" aria-label="Review ${esc(j.name)}, ${j.lane==='main'?'grid':'Trial'} Reel at ${clock(j.published_at||j.scheduled_at)}"><time>${clock(j.published_at||j.scheduled_at)}</time><img src="/api/preview/${j.clip_id}" alt="" loading="lazy"><span class="schedule-post-copy"><strong>${esc(j.name)}</strong><span class="schedule-caption">${esc(j.caption)}</span><span class="schedule-status ${j.error||!j.approved?'attention':''}">${esc(status)}${j.pinned?' · Time pinned':''}</span></span>${icon('edit')}</button>`;}
 function scheduleView(data){return `<p class="schedule-summary">${data.totals.trial} Trial${data.totals.trial===1?'':'s'} and ${data.totals.main} grid Reel${data.totals.main===1?'':'s'} planned across ${data.days.length} day${data.days.length===1?'':'s'}. All times in ${esc(data.timezone)}.</p>${data.preparing||data.unscheduled||data.overdue?`<div class="notice"><p>${data.preparing?`${data.preparing} clip${data.preparing===1?' is':'s are'} still preparing or waiting for a caption. `:''}${data.unscheduled?`${data.unscheduled} post${data.unscheduled===1?' has':'s have'} no slot yet, including switched-off destinations. `:''}${data.overdue?`${data.overdue} older post${data.overdue===1?' needs':'s need'} review in the post list. `:''}Only posts with assigned times appear below.</p></div>`:''}${data.days.map(d=>`<section class="schedule-day" aria-label="Day ${d.number}, ${day(d.timestamp)}"><div class="schedule-day-heading"><h3>Day ${d.number}<span>${day(d.timestamp)}</span></h3><span>${d.trial.length} Trial${d.trial.length===1?'':'s'} · ${d.main.length} grid</span></div><div class="schedule-lanes">${['trial','main'].map(lane=>`<div class="schedule-lane"><div class="schedule-lane-heading">${laneTag(lane)}<span>${lane==='trial'?'Non-followers first':'Profile grid + feed'}</span></div>${d[lane].length?d[lane].map(schedulePost).join(''):`<p class="schedule-empty">${data.limits[lane]?`No ${lane==='trial'?'Trial':'grid'} Reels scheduled.`:'This destination is switched off.'}</p>`}</div>`).join('')}</div></section>`).join('')}<p class="help">Daily counts are limits, not filler. Available footage, captions, same-clip spacing and conservation can leave gaps. Published posts today remain visible for context. Pinned times may exceed a daily target; the publisher still enforces the daily limit.</p>`;}
+function captionTools(){
+ return `<details id="caption-guidance" class="caption-guidance" ${guidanceOpen?'open':''}>
+  <summary>Caption guidance</summary>
+  <form id="caption-guidance-form">
+   <label class="field">Instructions for the caption model
+    <textarea name="caption_instructions" maxlength="4000" placeholder="Example: Use lowercase, keep it to one sentence, and skip the hashtags.">${esc(guidanceDraft??state.settings.caption_instructions)}</textarea>
+    <span>Save your tone, preferred wording and phrases to avoid. New captions and rewrites use these instructions. Saving guidance leaves existing captions as they are.</span>
+   </label>
+   <button class="button" type="submit">Save guidance</button>
+  </form>
+ </details>
+ <section id="caption-selection" class="caption-selection" aria-label="Regenerate captions">
+  <div class="caption-actions">
+   <strong id="caption-selected-count" aria-live="polite"></strong>
+   <button type="button" class="button small" data-action="select-clips">Select page</button>
+   <button type="button" class="button small" data-action="clear-clips">Clear selection</button>
+   <button type="button" class="primary small" data-action="regenerate-clips">${icon('spark')}Regenerate selected</button>
+  </div>
+  <p class="help" id="caption-selection-help"></p>
+  <details class="batch-guidance" ${batchGuidance?'open':''}>
+   <summary>One-off guidance</summary>
+   <label class="field">Instructions for this selection only
+    <textarea id="batch-guidance" maxlength="4000" placeholder="Example: Make these a little more playful.">${esc(batchGuidance)}</textarea>
+    <span>These instructions take priority for this batch. Your saved guidance stays the same.</span>
+   </label>
+  </details>
+  <p id="caption-progress" class="help" role="status"></p>
+ </section>`;
+}
+function canRewrite(clip){return !['processing','error'].includes(clip.status);}
+function clipCard(clip){
+ const id=esc(clip.id), name=esc(clip.name);
+ const status=clip.disabled?'Excluded':({ready:'Ready to rotate',captioning:'Writing caption',needs_caption:'Needs a caption',processing:'Preparing',error:'Needs attention'}[clip.status]||clip.status);
+ return `<article class="clip-card">
+  <button class="clip-poster" data-clip="${id}" aria-label="Review ${name}">${canRewrite(clip)?`<img src="/api/preview/${id}" alt="" loading="lazy">`:icon('film')}${badge(status,clip.status==='ready'&&!clip.disabled?'green':'rust')}<span class="clip-duration">${Math.round(clip.duration)}s</span></button>
+  <h3>${name}</h3><p class="clip-caption">${esc(clip.caption||clip.category||clip.caption_source||'Waiting for preparation')}</p>
+  ${canRewrite(clip)?`<label class="clip-select"><input type="checkbox" data-caption-select="${id}" aria-label="Select ${name} for caption regeneration">Select</label>`:''}
+ </article>`;
+}
+function captionControls(){
+ if(!state||!$('#caption-selection'))return;
+ const count=selectedClips.size;
+ const configured=state.ai_configured&&state.settings.ai_model;
+ $('#caption-selected-count').textContent=`${count} selected`;
+ $('[data-action="select-clips"]').disabled=captionBusy||!records.some(clip=>canRewrite(clip)&&!selectedClips.has(clip.id));
+ $('[data-action="clear-clips"]').disabled=captionBusy||!count;
+ $('[data-action="regenerate-clips"]').disabled=captionBusy||!count||guidanceDraft!==null||!configured;
+ $('#caption-selection-help').textContent=guidanceDraft!==null?'Save your caption guidance before regenerating.':!configured?'Connect a caption provider and choose a model in Settings.':'Select prepared clips, then regenerate. Edited post captions and published posts are kept.';
+ $('#caption-progress').textContent=captionProgress;
+ $('#caption-progress').classList.toggle('caption-failed',captionFailed);
+ const oneOff=$('#batch-guidance');
+ oneOff.disabled=captionBusy;
+ if(oneOff.value!==batchGuidance)oneOff.value=batchGuidance;
+ $('#caption-guidance-form textarea').disabled=captionBusy;
+ $('#caption-guidance-form button').disabled=captionBusy||guidanceDraft===null;
+ document.querySelectorAll('[data-caption-select]').forEach(box=>{
+  box.checked=selectedClips.has(box.dataset.captionSelect);
+  box.disabled=captionBusy;
+ });
+}
+async function regenerateSelected(){
+ if(captionBusy||guidanceDraft!==null||!selectedClips.size)return;
+ const batch=[...selectedClips], instructions=batchGuidance.trim();
+ captionBusy=true;captionFailed=false;
+ let completed=0;
+ try{
+  for(const [id,name] of batch){
+   if(!state||$('#shell').hidden)return;
+   captionProgress=`Regenerating ${completed+1} of ${batch.length}: ${name}`;
+   captionControls();
+   try{
+    const result=await api('/api/clips/'+encodeURIComponent(id)+'/regenerate','POST',instructions?{instructions}:undefined);
+    if(typeof result.caption!=='string')throw new Error('The server did not return a caption.');
+   }catch(e){
+    captionProgress=`${completed} of ${batch.length} regenerated. Stopped at ${name}: ${e.message} Remaining clips are still selected.`;
+    captionFailed=true;
+    break;
+   }
+   selectedClips.delete(id);
+   completed++;
+  }
+  if(!captionFailed){
+   batchGuidance='';
+   captionProgress=`Regenerated ${completed} caption${completed===1?'':'s'}.`;
+  }
+ }finally{
+  captionBusy=false;
+  captionControls();
+ }
+ if(state&&currentPage==='library'&&!$('#shell').hidden)await refresh();
+ else if(state&&!$('#shell').hidden)toast(captionProgress,captionFailed);
+}
+function bindCaptionTools(){
+ const form=$('#caption-guidance-form');
+ if(!form)return;
+ $('#caption-guidance').addEventListener('toggle',e=>{guidanceOpen=e.currentTarget.open;});
+ const input=form.elements.caption_instructions, oneOff=$('#batch-guidance');
+ oneOff.addEventListener('input',()=>{batchGuidance=oneOff.value;});
+ input.addEventListener('input',()=>{
+  guidanceDraft=input.value===state.settings.caption_instructions?null:input.value;
+  captionControls();
+ });
+ form.addEventListener('submit',async e=>{
+  e.preventDefault();
+  if(captionBusy||guidanceDraft===null)return;
+  captionBusy=true;
+  captionControls();
+  try{
+   await api('/api/settings','PATCH',{values:{caption_instructions:input.value}});
+   await loadState();
+   guidanceDraft=null;
+   toast('Caption guidance saved.');
+  }catch(err){toast(err.message,true);}
+  finally{captionBusy=false;captionControls();}
+ });
+ document.querySelectorAll('[data-caption-select]').forEach(box=>box.addEventListener('change',()=>{
+  const clip=records.find(r=>r.id===box.dataset.captionSelect);
+  if(!clip)return;
+  if(box.checked)selectedClips.set(clip.id,clip.name);else selectedClips.delete(clip.id);
+  captionControls();
+ }));
+ captionControls();
+}
 function safeLink(url){try{const u=new URL(url);return ['https:','http:'].includes(u.protocol)?esc(u.href):'#';}catch{return '#';}}
 function jobRow(j){return `<article class="queue-row"><img class="thumb" src="/api/preview/${j.clip_id}" alt="" loading="lazy"><div class="row-info"><h3>${esc(j.name)}</h3><p>${esc(j.caption)}</p><div class="row-meta">${laneTag(j.lane)}<span>${j.status==='published'?'Published':j.status==='rejected'?'Rejected':j.disabled?'Clip excluded':!j.approved?'Awaiting approval':j.status==='queued'?'Ready to post':esc(j.status)}</span>${j.pinned?'<span>Time pinned</span>':''}${j.error?badge('Needs attention','rust'):''}</div></div><div class="post-time"><strong>${clock(j.published_at||j.scheduled_at)}</strong><span>${j.scheduled_at||j.published_at?day(j.published_at||j.scheduled_at):'Awaiting a slot'}</span></div><button class="icon-button" data-job="${j.id}" aria-label="Review post ${j.id}">${icon(j.status==='published'?'external':'edit')}</button></article>`;}
 function setupStages(){return `<div class="setup-stage"><span class="stage-circle ${state.account?'done':''}">${state.account?icon('check'):'1'}</span><div><h3>Connect your Instagram</h3><p>Bring your account, previous captions and audience insights.</p></div><a href="#settings" class="button small">${state.account?'Connected':'Connect account'} ${icon('arrow')}</a></div><div class="setup-stage"><span class="stage-circle ${state.ai_configured?'done':''}">${state.ai_configured?icon('check'):'2'}</span><div><h3>Give the desk a voice</h3><p>Sign in with OpenRouter or connect an AI provider for short, footage-aware captions.</p></div><a href="#settings" class="button small">${state.ai_configured?'Configure model':'Set up captions'} ${icon('arrow')}</a></div><div class="setup-stage"><span class="stage-circle">3</span><div><h3>Add your source material</h3><p>Clips become regular and Trial Reels, mixed into a flexible running order.</p></div><button class="button small" data-action="upload">Add footage ${icon('arrow')}</button></div>`;}
@@ -84,6 +212,7 @@ function field(name,title,type='text',help='',attrs=''){const val=state.settings
 function toggle(name,title,help=''){return `<label class="toggle"><div>${title}${help?`<span>${help}</span>`:''}</div><input type="checkbox" name="${name}" ${state.settings[name]?'checked':''}></label>`;}
 function settingsView(){const s=state.settings;return header('Your desk. Your rules.','Set it up once. Come back when you want to change the mix.')+`<form id="settings-form"><div class="settings-grid"><div><section class="settings-section"><h2>Instagram</h2><div class="connection">${icon('instagram')}<div><strong>${state.account?'@'+esc(state.account.username):'No account connected'}</strong><p>${state.account?'Connection expires '+day(state.account.expires_at):'Business or Creator account required'}</p>${badge(state.account?'Connected':'Setup needed',state.account?'green':'')}</div><div class="inline-actions"><a href="/auth/instagram/start" class="button">${state.account?'Reconnect Instagram':'Connect Instagram'} ${icon('arrow')}</a>${state.account?'<button type="button" data-action="disconnect" class="text-button">Disconnect</button>':''}</div><p class="help">${state.meta_configured?'Meta app is configured. Login imports your recent posts on the next worker pass.':'Add META_APP_ID and META_APP_SECRET to compose.yaml, set your public HTTPS URL, and restart Docker. The deployment guide covers the exact redirect URL and permissions.'}</p><p class="help">Redirect URL: <code>${esc(state.public_url)}/auth/instagram/callback</code></p></section><section class="settings-section"><h2>Captions & voice</h2><p>The account’s previous posts lead. These notes steer the result for any artist, business or creator.</p>${field('brand_name','Account / brand name') }<label>What is this account about?<textarea name="business_context">${esc(s.business_context)}</textarea></label><label>Voice & factual guardrails<textarea name="voice_notes" maxlength="4000">${esc(s.voice_notes)}</textarea></label><label>Custom caption instructions<textarea name="caption_instructions" maxlength="4000" placeholder="e.g. Write like us: dry humour, lowercase, no emojis. One short sentence. Never say ‘big things coming’.">${esc(s.caption_instructions)}</textarea><span>Sent to the caption model with every new caption and rewrite. Set tone, wording, hashtags or phrases to avoid. Existing captions stay as they are until you choose Rewrite caption. Factual accuracy and the caption format still apply.</span></label><div class="connection">${icon('spark')}<div><strong>${state.ai_configured?'AI provider connected':'Connect a caption provider'}</strong><p>${esc(state.ai_base)}</p></div></div><div class="inline-actions"><a href="/auth/openrouter/start" class="button">Sign in with OpenRouter ${icon('arrow')}</a><button type="button" class="button" data-action="models">Load model catalog</button></div><label>Model ID<input name="ai_model" list="model-options" value="${esc(s.ai_model)}" placeholder="Choose a model from the live catalog"><datalist id="model-options"></datalist><span>Use a model that accepts images with visual captions enabled. Model names come from the provider; no assumed model alias.</span></label><label>Or paste an API key<input name="ai_key" type="password" autocomplete="new-password" placeholder="${state.ai_configured?'A key is stored securely. Leave blank to keep it.':'OpenRouter or configured provider API key'}"><span>Encrypted on the server. Never returned to your browser.</span></label>${toggle('ai_vision','Use sampled footage frames','Three silent frames go to your selected AI provider. Disable for text and operator notes only.')}<p class="help">OpenRouter sign-in uses your OpenRouter credit. To use another OpenAI-compatible provider, change AI_BASE_URL in compose.yaml. A missing provider or failed caption holds the clip for review.</p></section></div><div><section class="settings-section"><h2>The posting rhythm</h2>${field('timezone','Audience timezone','text','Editable until you know where your audience is. Use an IANA name, e.g. Europe/London.')}${toggle('paused','Pause all publishing')}${toggle('dry_run','Dry run','Prepare and review the queue without posting to Instagram.')}${toggle('require_approval','Require approval for new posts','Off means fully automatic. Existing approvals stay as they are.')}${toggle('trials_enabled','Publish Trial Reels','Every clip once. Trials stay Trials; automatic graduation is off.')}<div class="form-row">${field('trials_per_day','Trial Reels per day','number','0 switches Trials off.','min="0" max="10"')}${field('main_per_day','Grid Reels per day','number','0 switches grid posts off.','min="0" max="10"')}</div><div class="form-row">${field('preview_days','Schedule preview (days)','number','','min="1" max="90"')}${field('min_gap_days','Same clip, lane gap (days)','number','','min="0" max="90"')}</div><p class="help">Grid Reels are shared to your profile and feed. Trials reach non-followers first and stay off your grid. Trial eligibility is checked by Instagram when publishing. There is no fallback that silently publishes a Trial to your main feed.</p><h3>Posting times</h3><div class="form-row">${field('posting_start_hour','First posting hour','number','24-hour time, in the audience timezone.','min="0" max="22"')}${field('posting_end_hour','Last posting hour','number','Allow at least 90 minutes between posts to the same destination.','min="1" max="23"')}</div>${toggle('learn_timing','Learn posting times from engagement','Off uses your preferred weekday hour and spreads extra posts across your window.')}<h3>Preferred hour by weekday</h3><div class="week-hours">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=>`<label>${d}<input type="number" name="hour_${i}" min="0" max="23" value="${s.schedule_hours[i]}" aria-label="${d} starting hour"></label>`).join('')}</div><p class="help">24-hour format. One grid slot favours this hour, within your posting window; extra posts and Trials spread across that window. When timing learning is on, five mature same-weekday observations unlock timing choices; every fifth date explores another hour.</p></section><section class="settings-section"><h2>Keep the footage going</h2>${toggle('conserve','Automatically conserve footage','Use the lighter rhythm below when stock is low or a footage break would exhaust the library.')}<div class="form-row">${field('conserve_every_days','Conservation: post every N days','number','','min="2" max="14"')}${field('conserve_main_per_day','Grid Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}</div>${field('conserve_trials_per_day','Trial Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}${field('low_watermark','Low-footage threshold (clips)','number','','min="0" max="365"')}${field('drought_until','No new footage until','date','Clear this date when you are filming again. If your conservation pace still cannot cover the gap, you get an alert.')}<div class="form-row">${field('ntfy_url','ntfy server','url')}${field('ntfy_topic','ntfy topic','text','Use a private topic or an authenticated server.')}</div><label>ntfy access token<input name="ntfy_token" type="password" autocomplete="new-password" placeholder="${state.ntfy_token_set?'Token stored. Leave blank to keep it.':'Optional bearer token'}"></label><button type="button" class="button small" data-action="notify">Send a test notification</button><p class="help">Save changes before testing. Low stock alerts are limited to once per day, failures have durable delivery retries, and post problems include a recovery prompt.</p></section></div></div><div class="save-bar"><button class="primary" type="submit">Save settings ${icon('check')}</button><span>Changes apply to the future queue. Pinned times stay in place.</span></div></form>`;}
 function bindForms(){
+ bindCaptionTools();
  const scheduleForm=$('#schedule-form');if(scheduleForm){scheduleForm.addEventListener('input',()=>{scheduleDraft=Object.fromEntries(['preview_days','trials_per_day','main_per_day'].map(k=>[k,scheduleForm.elements.namedItem(k).value]));});scheduleForm.addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{const values=Object.fromEntries(['preview_days','trials_per_day','main_per_day'].map(k=>[k,Number(form.elements.namedItem(k).value)]));await api('/api/settings','PATCH',{values});scheduleDraft=null;toast('Schedule rebuilt. Publishing controls are unchanged.');await refresh();});});}
  const form=$('#settings-form');if(form)form.addEventListener('submit',async e=>{e.preventDefault();await busy(e.submitter,async()=>{const fd=new FormData(form);const values={};Object.keys(state.settings).forEach(k=>{if(k==='schedule_hours')return;const el=form.elements.namedItem(k);if(!el)return;const type=typeof state.settings[k];values[k]=type==='boolean'?el.checked:type==='number'?Number(el.value):el.value;});values.schedule_hours=Array.from({length:7},(_,i)=>Number(fd.get('hour_'+i)));await api('/api/settings','PATCH',{values});const ai_key=fd.get('ai_key'),ntfy_token=fd.get('ntfy_token');if(ai_key||ntfy_token)await api('/api/keys','POST',{ai_key,ntfy_token});scheduleDraft=null;toast('Settings saved. The future queue has been updated.');await refresh();});});
  const zone=$('#drop-zone');if(zone){zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('dragging');});zone.addEventListener('dragleave',()=>zone.classList.remove('dragging'));zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('dragging');uploadFiles(e.dataTransfer.files);});}
@@ -102,7 +231,7 @@ async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)retur
 $('#close-editor').addEventListener('click',()=>{$('#editor video')?.pause();$('#editor').close();});
 $('#editor').addEventListener('close',()=>$('#editor video')?.pause());
 $('#pause-button').addEventListener('click',e=>busy(e.currentTarget,async()=>{await api('/api/settings','PATCH',{values:{paused:!state.settings.paused}});await refresh();toast(state.settings.paused?'Publishing paused.':'Queue resumed'+(state.settings.dry_run?' in dry-run mode.':'.'));}));
-$('#logout').addEventListener('click',()=>busy($('#logout'),async()=>{if(state.demo){toast('This is a local preview. No account is signed in.');return;}await api('/api/logout','POST');state=null;showLogin();}));
+$('#logout').addEventListener('click',()=>busy($('#logout'),async()=>{if(state.demo){toast('This is a local preview. No account is signed in.');return;}await api('/api/logout','POST');selectedClips.clear();guidanceDraft=null;guidanceOpen=false;batchGuidance='';captionProgress='';state=null;showLogin();}));
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;$('#login-error').textContent='';try{await api('/api/login','POST',{password:form.elements.password.value});form.reset();await start();}catch(err){$('#login-error').textContent=err.message;}});
 window.addEventListener('hashchange',()=>{offset=0;filter='all';if(state)render().catch(e=>toast(e.message,true));});
 document.addEventListener('click',async e=>{
@@ -112,9 +241,16 @@ document.addEventListener('click',async e=>{
  if(target.dataset.job){await openJob(target.dataset.job);return;}
  if(target.dataset.clip){await openClip(target.dataset.clip);return;}
  if(target.dataset.retryClip){await busy(target,async()=>{await api('/api/clips/'+target.dataset.retryClip+'/retry','POST');$('#editor').close();toast('Preparation will retry on the next worker pass.');await refresh();});return;}
- if(target.dataset.regenerate){await busy(target,async()=>{await api('/api/clips/'+target.dataset.regenerate+'/regenerate','POST');$('#editor').close();toast('A fresh caption is ready.');await refresh();});return;}
+ if(target.dataset.regenerate){if(captionBusy){toast('Wait for the caption operation to finish.');return;}await busy(target,async()=>{await api('/api/clips/'+target.dataset.regenerate+'/regenerate','POST');$('#editor').close();toast('A fresh caption is ready.');await refresh();});return;}
  if(target.dataset.jobAction){await busy(target,async()=>{await api('/api/jobs/'+target.dataset.id+'/action','POST',{action:target.dataset.jobAction,media_id:$('#resolved-media-id')?.value||''});$('#editor').close();toast('Post state updated.');await refresh();});return;}
  const a=target.dataset.action;if(!a)return;
+ if(a==='select-clips'||a==='clear-clips'){
+  if(captionBusy)return;
+  if(a==='clear-clips'){selectedClips.clear();batchGuidance='';}
+  else records.filter(canRewrite).forEach(clip=>selectedClips.set(clip.id,clip.name));
+  captionControls();return;
+ }
+ if(a==='regenerate-clips'){await regenerateSelected();return;}
  if(a==='upload'){chooseUpload();return;}
  if(a==='next'||a==='previous'){offset=Math.max(0,offset+(a==='next'?50:-50));await render();return;}
  await busy(target,async()=>{
@@ -125,7 +261,7 @@ document.addEventListener('click',async e=>{
  });
 });
 async function start(){try{await loadState();$('#login').hidden=true;$('#shell').hidden=false;await render();}catch(e){if(!state)showLogin();else toast(e.message,true);}}
-icons();start();setInterval(()=>{if(state&&!$('#editor').open&&!(currentPage==='queue'&&scheduleDraft)&&['queue','library','activity'].includes(currentPage))refresh().catch(e=>toast(e.message,true));},30000);
+icons();start();setInterval(()=>{if(state&&!$('#editor').open&&!(currentPage==='queue'&&scheduleDraft)&&!(currentPage==='library'&&(captionBusy||guidanceDraft!==null||$('#caption-guidance')?.contains(document.activeElement)||$('#caption-selection')?.contains(document.activeElement)||document.activeElement?.matches('[data-caption-select]')))&&['queue','library','activity'].includes(currentPage))refresh().catch(e=>toast(e.message,true));},30000);
 
 window.addEventListener('unhandledrejection',event=>{event.preventDefault();toast(event.reason?.message||'The request could not finish. Check the connection and try again.',true);});
 
