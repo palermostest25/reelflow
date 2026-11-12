@@ -65,6 +65,19 @@ docker compose up -d
 
 The named data volume is retained across updates. Take a backup first. To roll back, set `image:` to a previously tested `sha-<full-commit>` tag and recreate. Database compatibility still matters; restore a matching backup when a release changes schema incompatibly.
 
+## Update on TrueNAS
+
+For an app installed through **Apps → Install via YAML**, retain the existing configuration and mounts. In the `reelflow` service use:
+
+```yaml
+    image: ghcr.io/palermostest25/reelflow:latest
+    pull_policy: always
+```
+
+Use **Apps → Reelflow → Update** when TrueNAS offers it. To force a fresh pull and replacement in one step, run `sudo midclt call -j app.redeploy reelflow` in the TrueNAS system shell (use the installed app name if different). [TrueNAS redeploy API](https://api.truenas.com/v25.10.0/api_methods_app.redeploy.html).
+
+Reload the dashboard and read the version and build ID in the footer. A numbered or commit-specific image tag stays pinned; switch back to `:latest` for normal updates. Reelflow changes its JavaScript and CSS URLs when their contents change, so the browser loads the files for the new dashboard.
+
 ## TrueNAS footage and data
 
 The container runs as UID/GID 1000. Grant that identity read/traverse access to the watched footage dataset, or add a `user: "UID:GID"` setting for an identity with suitable dataset permissions. If changing the UID/GID on an existing installation, update the application volume's ownership first.

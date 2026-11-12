@@ -7,12 +7,13 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from html import escape
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 import httpx
 from fastapi import FastAPI, Request, HTTPException, UploadFile, BackgroundTasks
-from fastapi.responses import FileResponse, RedirectResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -26,6 +27,10 @@ from .worker import tick, finish, publish_limit, send_post_now
 # Set the shared installation key before constructing session middleware.
 c.bootstrap_runtime()
 STATIC = Path(__file__).parent/'static'
+ASSETS = {name:hashlib.sha256((STATIC/name).read_bytes()).hexdigest()[:12] for name in ('app.js','style.css')}
+INDEX = (STATIC/'index.html').read_text(encoding='utf-8').replace('{{VERSION}}',escape(c.VERSION)).replace('{{REVISION}}',escape(c.REVISION[:7]))
+for name, digest in ASSETS.items():
+    INDEX = INDEX.replace('/static/'+name,f'/static/build/{digest}/{name}')
 
 @asynccontextmanager
 async def lifespan(app):
@@ -57,17 +62,24 @@ async def guard(request: Request, call_next):
     response.headers['Referrer-Policy'] = 'no-referrer'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data:; media-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
-    if not path.startswith('/static/'):
+    if not path.startswith('/static/') or path in ('/static/app.js','/static/style.css'):
         response.headers['Cache-Control'] = 'no-store'
     return response
 
 # Session must wrap guard, so signed session is available to every route.
 app.add_middleware(SessionMiddleware,secret_key=c.SECRET or 'not-configured',session_cookie='reelflow',same_site='lax',https_only=c.PUBLIC_URL.startswith('https://'),max_age=12*3600)
+
+@app.get('/static/build/{digest}/{filename}')
+def versioned_asset(digest: str, filename: str):
+    if ASSETS.get(filename)!=digest:
+        raise HTTPException(404)
+    return FileResponse(STATIC/filename,headers={'Cache-Control':'public, max-age=31536000, immutable'})
+
 app.mount('/static',StaticFiles(directory=STATIC),name='static')
 
 @app.get('/')
 def index():
-    return FileResponse(STATIC/'index.html')
+    return HTMLResponse(INDEX)
 
 @app.get('/healthz')
 def health():
@@ -75,7 +87,7 @@ def health():
         with connect() as db:
             db.execute('SELECT 1').fetchone()
         beat = float(runtime('heartbeat') or 0)
-        return {'status':'ok','worker_alive':time.time()-beat<180}
+        return {'status':'ok','worker_alive':time.time()-beat<180,'version':c.VERSION,'revision':c.REVISION}
     except Exception:
         return JSONResponse({'status':'unavailable'},503)
 

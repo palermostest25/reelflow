@@ -2,6 +2,7 @@
 import hashlib
 import http.cookiejar
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -23,6 +24,16 @@ for attempt in range(90):
     time.sleep(.5)
 else:
     raise SystemExit('The web UI and posting worker did not become ready.')
+assert ready['version']==c.VERSION and ready['revision']==c.REVISION
+with urllib.request.urlopen(base+'/',timeout=5) as response:
+    page=response.read().decode()
+    assert response.headers['Cache-Control']=='no-store'
+assert f'Reelflow {c.VERSION} · {c.REVISION[:7]}' in page
+assets=re.findall(r'/static/build/([a-f0-9]{12})/(app\.js|style\.css)',page)
+assert {name for _,name in assets}=={'app.js','style.css'}
+for digest,name in assets:
+    with urllib.request.urlopen(f'{base}/static/build/{digest}/{name}',timeout=5) as response:
+        assert hashlib.sha256(response.read()).hexdigest().startswith(digest)
 state=json.loads((c.DATA/'.runtime.json').read_text())
 fingerprint=hashlib.sha256(json.dumps(state,sort_keys=True).encode()).hexdigest()
 client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))

@@ -37,12 +37,19 @@ The one container runs the web UI and posting worker together. A supervisor stop
 
 Connect OpenRouter and ntfy through the UI. The app starts paused in dry run; live publishing uses the **official Instagram API**, creating a Reel container with `POST /{ig_id}/media`, letting Instagram fetch the signed video URL, then publishing with `POST /{ig_id}/media_publish`. A Meta app and eligible professional account are required. See [deployment](docs/DEPLOYMENT.md) for account setup, TrueNAS permissions, updates and backups.
 
-To update:
+To update a Compose installation from the directory containing its Compose file:
 
 ```sh
-docker compose pull
-docker compose up -d
+docker compose up -d --pull always --force-recreate reelflow
 ```
+
+For **TrueNAS Apps**, keep the image on `ghcr.io/palermostest25/reelflow:latest` with `pull_policy: always` in the app YAML. Use **Apps → Reelflow → Update** when available. You can also force TrueNAS to pull and redeploy it from the system shell:
+
+```sh
+sudo midclt call -j app.redeploy reelflow
+```
+
+Refresh Reelflow and check its footer for the running version and short build ID. `/healthz` also reports the version and full revision. Releases are available as `:latest`, a numbered tag such as `:1.0.24`, and `:sha-<full-commit>`. Updates preserve the existing `/data` and footage mounts.
 
 ## Plan before publishing
 

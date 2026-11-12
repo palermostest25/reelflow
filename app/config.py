@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
 
+VERSION = os.getenv('REELFLOW_VERSION', 'dev')
+REVISION = os.getenv('REELFLOW_REVISION', 'unknown')
+
 DATA = Path(os.getenv('DATA_DIR', './data')).resolve()
 FOOTAGE = Path(os.getenv('FOOTAGE_DIR', './footage')).resolve()
 DB = DATA / 'reelflow.sqlite3'

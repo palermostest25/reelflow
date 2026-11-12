@@ -2,6 +2,7 @@ name: reelflow
 services:
   reelflow:
     image: ghcr.io/palermostest25/reelflow:latest
+    pull_policy: always
     restart: unless-stopped
     init: true
     stop_grace_period: 30s

@@ -10,6 +10,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY scripts ./scripts
 RUN mkdir -p /data /footage && chown app:app /data /footage
+ARG BUILD_VERSION=dev
+ARG BUILD_REVISION=unknown
+ENV REELFLOW_VERSION=$BUILD_VERSION REELFLOW_REVISION=$BUILD_REVISION
+LABEL org.opencontainers.image.version="$BUILD_VERSION" org.opencontainers.image.revision="$BUILD_REVISION"
 USER app
 EXPOSE 8080
 CMD ["python", "-m", "app.launch"]
