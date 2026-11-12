@@ -124,6 +124,22 @@ def test_no_caption_clip_held_until_manual_caption(client):
     assert client.patch('/api/clips/'+cid,headers=h,json={'caption':'From our desk to yours.'}).status_code==200
     assert len(client.get('/api/jobs').json())==2
 
+def test_rewrite_updates_old_time_only_locks_but_preserves_edited_captions(client,monkeypatch):
+    from app import ai
+    h=auth(client);cid=seed(1)[0]
+    plan()
+    grid,trial=[next(j for j in client.get('/api/jobs').json() if j['lane']==lane) for lane in ('main','trial')]
+    assert client.patch(f"/api/jobs/{grid['id']}",headers=h,json={'caption':grid['caption'],'pinned':True}).status_code==200
+    assert client.patch(f"/api/jobs/{trial['id']}",headers=h,json={'caption':'My handwritten caption'}).status_code==200
+    with connect(True) as db:
+        assert db.execute('SELECT caption_locked FROM jobs WHERE id=?',(grid['id'],)).fetchone()[0]==0
+        db.execute('UPDATE jobs SET caption_locked=1 WHERE id=?',(grid['id'],))
+    monkeypatch.setattr(ai,'generate',lambda *args:('Fresh caption stv','DJ set'))
+    assert client.post('/api/clips/'+cid+'/regenerate',headers=h).status_code==200
+    with connect() as db:
+        assert tuple(db.execute('SELECT caption,caption_locked,pinned FROM jobs WHERE id=?',(grid['id'],)).fetchone())==('Fresh caption stv',0,1)
+        assert tuple(db.execute('SELECT caption,caption_locked FROM jobs WHERE id=?',(trial['id'],)).fetchone())==('My handwritten caption',1)
+
 def test_oauth_state_rejection(client,monkeypatch):
     h=auth(client)
     monkeypatch.setattr(c,'META_ID','test-id')

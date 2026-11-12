@@ -364,9 +364,12 @@ def edit_job(job_id: int, body: JobEdit):
             values['caption'] = values['caption'].strip()
             if not values['caption']:
                 raise HTTPException(422,'Write a caption first.')
-            values['caption_locked'] = 1
-            # Any changed caption needs a new container; a container's caption is immutable.
-            values['container_id'] = None
+            if values['caption'] != job['caption']:
+                values['caption_locked'] = 1
+                # A container's caption is immutable.
+                values['container_id'] = None
+            else:
+                values.pop('caption')
         if 'scheduled_at' in values:
             ts = values['scheduled_at']
             if not time.time()+60<=ts<=time.time()+366*86400:
@@ -376,6 +379,8 @@ def edit_job(job_id: int, body: JobEdit):
             if db.execute("SELECT 1 FROM jobs WHERE id!=? AND lane=? AND status NOT IN ('rejected','failed') AND ABS(COALESCE(published_at,scheduled_at)-?)<?",(job_id,job['lane'],ts,gap)).fetchone():
                 raise HTTPException(409,'This time conflicts with another post. Choose a more widely spaced time.')
             values['pinned'] = True
+        if not values:
+            return {'ok':True}
         db.execute('UPDATE jobs SET '+','.join(k+'=?' for k in values)+' WHERE id=?',tuple(values.values())+(job_id,))
         event('Upcoming post edited.','info',job_id,db)
     plan()
@@ -489,7 +494,7 @@ def regenerate(clip_id: str, body: CaptionRewrite = None):
     with connect(True) as db:
         if db.execute("UPDATE clips SET caption=?,category=?,status='ready',error='',caption_source=? WHERE id=? AND media_version!=? AND status IN ('ready','captioning','needs_caption')",(caption,category,s['ai_model'],clip_id,media.REBUILD_REQUESTED)).rowcount!=1:
             raise HTTPException(409,'Wait for footage processing to finish first.')
-        db.execute("UPDATE jobs SET caption=?,container_id=NULL WHERE clip_id=? AND caption_locked=0 AND status IN ('queued','retry')",(caption,clip_id))
+        db.execute("UPDATE jobs SET caption=?,caption_locked=0,container_id=NULL WHERE clip_id=? AND (caption_locked=0 OR caption=?) AND status IN ('queued','retry')",(caption,clip_id,clip['caption']))
         event('Caption regenerated for '+clip['name'],db=db)
     runtime('caption_retry_at',0)
     plan()

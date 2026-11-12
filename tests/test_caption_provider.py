@@ -75,6 +75,28 @@ def test_vision_frames_are_retained_when_requesting_structured_output(monkeypatc
     assert ai.generate(clip,s)[0]=='Keep the next one rolling.'
 
 
+@pytest.mark.parametrize('replacement', ['A bit much? Good.',None])
+def test_rewrite_rejects_angle_narration_and_applies_saved_signoff(monkeypatch,replacement):
+    clip,s=clip_and_settings(monkeypatch)
+    s['voice_notes']='Do not mention the camera angles.'
+    s['caption_instructions']='Always end with “stv” or “stv 🏴‍☠️”.'
+    monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
+    bad='Trading off on the decks, cutting between overhead and front angles from this session.'
+    requests=[]
+    def provider(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200,json=completion((replacement or bad) if len(requests)>1 else bad))
+    install_transport(monkeypatch,provider)
+    if replacement:
+        assert ai.generate(clip,s)[0]=='A bit much? Good. stv'
+    else:
+        with pytest.raises(ai.CaptionError,match='No new caption was saved'):
+            ai.generate(clip,s)
+    assert len(requests)==2
+    assert s['voice_notes'] in requests[0]['messages'][0]['content']
+    assert 'draft was rejected' in requests[1]['messages'][0]['content']
+
+
 @pytest.mark.parametrize('content',[None,'',json.dumps({'caption':'Complete looking text.','category':'DJ performance'})])
 def test_length_completion_is_held_even_if_partial_content_looks_valid(content):
     with pytest.raises(ai.CaptionError,match='output limit'):
