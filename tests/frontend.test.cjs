@@ -72,6 +72,7 @@ test('bulk rewrite sends one-off guidance only to selected clips and keeps the u
   };
   const remaining = await vm.runInContext(`
     state = {settings: {}};
+    $('#shell').hidden = false;
     currentPage = 'library';
     records = [{id:'first'}, {id:'unselected'}, {id:'second'}, {id:'third'}];
     selectedClips.set('first','First').set('second','Second').set('third','Third');
