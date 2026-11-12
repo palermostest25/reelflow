@@ -167,7 +167,7 @@ def test_model_change_clears_caption_backoff_but_unrelated_settings_do_not(clien
     h=auth(client)
     retry=time.time()+1800
     runtime('caption_retry_at',retry)
-    assert client.patch('/api/settings',headers=h,json={'values':{'brand_name':'TRADES'}}).status_code==200
+    assert client.patch('/api/settings',headers=h,json={'values':{'low_watermark':10}}).status_code==200
     assert float(runtime('caption_retry_at'))==retry
     assert client.patch('/api/settings',headers=h,json={'values':{'ai_model':'meta/muse-spark-1.3-contributor'}}).status_code==200
     assert float(runtime('caption_retry_at'))==0

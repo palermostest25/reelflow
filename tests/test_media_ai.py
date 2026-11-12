@@ -18,11 +18,21 @@ def test_actual_video_intake_conversion_and_duplicate_hashing(size):
     assert r['status']=='captioning' and r['duration']>=3
     assert (c.DATA/'media'/(r['id']+'.mp4')).exists()
     assert (c.DATA/'thumbs'/(r['id']+'.jpg')).exists()
-    assert media.probe(c.DATA/'media'/(r['id']+'.mp4'))[1:]==size
+    export = c.DATA/'media'/(r['id']+'.mp4')
+    assert media.probe(export)[1:]==size
+    assert 0 < r['cover_auto_ms'] < r['duration']*1000
+    assert media.cover_jpeg(export,r['cover_auto_ms']).startswith(b'\xff\xd8')
     shutil.copyfile(path,c.FOOTAGE/'duplicate.mov')
     media.scan(now+40)
     assert media.scan(now+80)==0
     with connect() as db:assert db.execute('SELECT COUNT(*) FROM clips').fetchone()[0]==1
+
+def test_cover_scoring_penalizes_dark_frames_and_prefers_color_when_requested():
+    black = bytes(64*64*3)
+    gray = bytes([110,110,110])*64*64
+    colorful = bytes([200,85,70])*64*64
+    assert media.cover_scores(black)[0] < media.cover_scores(gray)[0]
+    assert media.cover_scores(colorful)[1] > media.cover_scores(gray)[1]
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'),reason='ffmpeg required')
 def test_rebuild_uses_original_without_replacing_captions_or_pinned_time():

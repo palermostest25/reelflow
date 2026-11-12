@@ -98,15 +98,19 @@ def test_rewrite_rejects_angle_narration_and_applies_saved_signoff(monkeypatch,r
 
 
 @pytest.mark.parametrize('draft', ['Trading off on the decks.', 'WE DO TAKE THIS SERIOUSLY! stv 🏴‍☠️'])
-def test_trades_is_a_name_and_recent_caption_bodies_cannot_repeat(monkeypatch,draft):
+def test_configured_phrase_bans_and_recent_caption_bodies(monkeypatch,draft):
     clip,s=clip_and_settings(monkeypatch)
-    s.update(brand_name='TRADES',caption_instructions='Always end with “stv” or “stv 🏴‍☠️”.')
+    s.update(brand_name='TRADES',caption_blocklist='trading off\ntaking turns',caption_signoff='stv\nstv 🏴‍☠️')
     with connect(True) as db:
         db.execute("INSERT INTO history(media_id,caption) VALUES('12345','We do take this seriously. stv')")
     monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
     replies=iter([draft,'Normal behaviour from TRADES. Allegedly.'])
     install_transport(monkeypatch,lambda request:httpx.Response(200,json=completion(next(replies))))
     assert ai.generate(clip,s)[0]=='Normal behaviour from TRADES. Allegedly. stv'
+
+def test_saved_hashtags_replace_model_tags_before_the_signoff():
+    assert ai.format_caption('Keep it going. #Unrequested stv 🏴‍☠️',
+        ['stv','stv 🏴‍☠️'],['#DJSet','#PerthMusic']) == 'Keep it going.\n\n#DJSet #PerthMusic stv 🏴‍☠️'
 
 
 @pytest.mark.parametrize('content',[None,'',json.dumps({'caption':'Complete looking text.','category':'DJ performance'})])

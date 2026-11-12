@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS clips (
  duration REAL DEFAULT 0, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0,
  status TEXT NOT NULL DEFAULT 'processing', error TEXT DEFAULT '', notes TEXT DEFAULT '',
  media_version INTEGER NOT NULL DEFAULT 0,
+ cover_auto_ms INTEGER, cover_color_ms INTEGER, cover_manual_ms INTEGER,
  caption TEXT DEFAULT '', caption_source TEXT DEFAULT '', category TEXT DEFAULT '', disabled INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS jobs (
@@ -21,7 +22,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  scheduled_at REAL, caption TEXT NOT NULL DEFAULT '', approved INTEGER DEFAULT 1,
  pinned INTEGER DEFAULT 0, caption_locked INTEGER DEFAULT 0, reason TEXT DEFAULT '',
  container_id TEXT, media_id TEXT, permalink TEXT, attempts INTEGER DEFAULT 0,
- next_attempt REAL DEFAULT 0, publish_started REAL, published_at REAL, error TEXT DEFAULT '', post_now_at REAL,
+ next_attempt REAL DEFAULT 0, publish_started REAL, published_at REAL, error TEXT DEFAULT '', post_now_at REAL, container_cover_ms INTEGER,
  UNIQUE(clip_id,lane)
 );
 CREATE INDEX IF NOT EXISTS queue_due ON jobs(status,scheduled_at);
@@ -60,10 +61,17 @@ def init():
         db.execute('PRAGMA journal_mode=WAL')
         db.executescript(SCHEMA)
     with connect(True) as db:
-        if not any(row['name']=='media_version' for row in db.execute('PRAGMA table_info(clips)')):
+        clip_columns = {row['name'] for row in db.execute('PRAGMA table_info(clips)')}
+        job_columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
+        if 'media_version' not in clip_columns:
             db.execute('ALTER TABLE clips ADD COLUMN media_version INTEGER NOT NULL DEFAULT 0')
-        if not any(row['name']=='post_now_at' for row in db.execute('PRAGMA table_info(jobs)')):
+        for column in ('cover_auto_ms','cover_color_ms','cover_manual_ms'):
+            if column not in clip_columns:
+                db.execute(f'ALTER TABLE clips ADD COLUMN {column} INTEGER')
+        if 'post_now_at' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN post_now_at REAL')
+        if 'container_cover_ms' not in job_columns:
+            db.execute('ALTER TABLE jobs ADD COLUMN container_cover_ms INTEGER')
         db.execute('INSERT OR IGNORE INTO settings VALUES(1,?)', (json.dumps(c.DEFAULTS),))
 
 def settings(db=None):

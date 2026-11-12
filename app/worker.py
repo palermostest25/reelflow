@@ -68,7 +68,8 @@ def publish_limit(db, s, job, now):
 
 def advance(job_id, now, *, manual_only=False):
     with connect() as db:
-        job = db.execute('SELECT j.*,c.disabled,c.media_version,c.status AS clip_status FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?',(job_id,)).fetchone()
+        job = db.execute('''SELECT j.*,c.disabled,c.media_version,c.duration,c.status AS clip_status,
+            c.cover_manual_ms,c.cover_auto_ms,c.cover_color_ms FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.id=?''',(job_id,)).fetchone()
         account = db.execute('SELECT * FROM account WHERE id=1').fetchone()
     s = settings()
     manual = job['post_now_at'] if job else None
@@ -107,14 +108,24 @@ def advance(job_id, now, *, manual_only=False):
     if job['media_version'] < media.MEDIA_VERSION:
         return  # The scanner must rebuild the old export before sending it to Instagram.
     try:
+        if s['cover_mode']!='instagram' and job['cover_auto_ms'] is None and job['cover_manual_ms'] is None:
+            media.prepare_cover(job['clip_id'],job['duration'])
+        with connect(True) as db:
+            job = dict(db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone())
+            clip = db.execute('SELECT * FROM clips WHERE id=?',(job['clip_id'],)).fetchone()
+            if clip['media_version']<media.MEDIA_VERSION or job['status'] not in ('queued','retry','processing'):
+                return
+            job['cover_ms'] = media.cover_offset(clip,settings(db)['cover_mode'])
+            if job['container_id'] and job['container_cover_ms']!=job['cover_ms']:
+                db.execute('UPDATE jobs SET container_id=NULL WHERE id=?',(job_id,))
+                job['container_id'] = None
+            if not job['container_id']:
+                db.execute("UPDATE jobs SET status='processing' WHERE id=?",(job_id,))
         if not job['container_id']:
-            with connect(True) as db:
-                if db.execute("UPDATE jobs SET status='processing' WHERE id=? AND status IN ('queued','retry','processing')",(job_id,)).rowcount!=1:
-                    return
             # Safe to retry container creation after a lost response: it does not publish.
             container_id = ig.create_container(account['ig_id'],job,media_url(job['clip_id']))
             with connect(True) as db:
-                db.execute('UPDATE jobs SET container_id=? WHERE id=?',(container_id,job_id))
+                db.execute('UPDATE jobs SET container_id=?,container_cover_ms=? WHERE id=?',(container_id,job['cover_ms'],job_id))
         else:
             container_id = job['container_id']
         status = ig.container_status(container_id)
@@ -131,7 +142,7 @@ def advance(job_id, now, *, manual_only=False):
         with connect(True) as db:
             fresh = db.execute('SELECT * FROM jobs WHERE id=?',(job_id,)).fetchone()
             current = settings(db)
-            clip = db.execute('SELECT disabled,status,media_version FROM clips WHERE id=?',(job['clip_id'],)).fetchone()
+            clip = db.execute('SELECT * FROM clips WHERE id=?',(job['clip_id'],)).fetchone()
             if clip['status']!='ready' or clip['media_version']<media.MEDIA_VERSION:
                 return
             requested = fresh['post_now_at']
@@ -139,7 +150,8 @@ def advance(job_id, now, *, manual_only=False):
                 return
             if not requested and (current['paused'] or clip['disabled'] or not fresh['approved'] or not daily_limit(current,job['lane'])):
                 return
-            if fresh['caption'] != job['caption']:
+            if (fresh['caption'] != job['caption'] or fresh['container_id'] != container_id
+                or media.cover_offset(clip,current['cover_mode']) != job['cover_ms']):
                 db.execute("UPDATE jobs SET container_id=NULL,status='queued' WHERE id=?",(job_id,))
                 return
             if requested and time.time()-requested>3600:
@@ -201,6 +213,8 @@ def tick():
                     runtime('account_retry_at',time.time()+1800)
                     ntfy.enqueue('sync:'+time.strftime('%Y-%m-%d'),'Instagram sync failed. Check connection and permissions in Reelflow.')
         media.scan()
+        if settings()['cover_mode']!='instagram':
+            media.backfill_covers()
         ai.caption_pending()
         summary = plan()
         ntfy.stock_alert(summary)

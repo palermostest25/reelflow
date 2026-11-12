@@ -127,8 +127,7 @@ CAMERA_TALK = re.compile(r'\b(?:multicam|(?:camera|overhead|front|side|different
 NO_ANGLES = re.compile(r"\b(?:never|do not|don['’]t|avoid)\b[^.!?\n]{0,100}\bcamera angles?\b",re.I)
 QUOTED = r'''["“‘']([^"”’'\r\n]{1,32})["”’']'''
 SIGNOFF = re.compile(r'\balways end (?:the caption )?with\s+'+QUOTED+r'(?:\s+or\s+'+QUOTED+r')?',re.I)
-TRADE_WORD = re.compile(r'\btrad(?:e[sd]?|ing)\b',re.I)
-TAKING_TURNS = re.compile(r'\b(?:TRADES\s+off|tak(?:e[s]?|ing) turns|swap(?:s|ping)? (?:at|on|behind) the decks)\b',re.I)
+HASHTAG = re.compile(r'(?<!\w)#\w+')
 
 def add_signoff(caption, endings):
     if not endings:
@@ -138,18 +137,27 @@ def add_signoff(caption, endings):
         if match:
             return caption[:match.start()]+ending
     caption = re.sub(r'(?<!\w)'+re.escape(endings[0])+r'[^\w]*$','',caption,flags=re.I).rstrip()
-    caption = (caption+' '+endings[0]).strip()
-    if len(caption)>400:
-        raise CaptionError('The caption is too long with the required sign-off. Ask for a shorter caption.',300)
-    return caption
+    return (caption+' '+endings[0]).strip()
 
 def caption_key(caption, endings):
-    words = tuple(re.findall(r'\w+',caption.casefold()))
+    words = tuple(re.findall(r'\w+',HASHTAG.sub('',caption).casefold()))
     for ending in endings:
         tail = tuple(re.findall(r'\w+',ending.casefold()))
         if tail and words[-len(tail):]==tail:
             return words[:-len(tail)]
     return words
+
+def format_caption(caption, endings, tags):
+    if tags:
+        caption = HASHTAG.sub('',caption).strip()
+        # Move the existing sign-off after the selected tags.
+        for ending in sorted(endings,key=len,reverse=True):
+            match = re.search(r'(?<!\w)'+re.escape(ending)+r'[\s.!?]*$',caption,re.I)
+            if match:
+                caption, endings = caption[:match.start()].rstrip(), [ending]
+                break
+        caption = caption+'\n\n'+' '.join(tags)
+    return add_signoff(caption,endings)
 
 def generate(clip, s):
     key = api_key()
@@ -175,12 +183,23 @@ def generate(clip, s):
     if custom:
         system += '\nOperator custom instructions take priority over style examples and general voice guidance:\n'+custom
     system += '\nFollow explicit wording bans and sign-offs. Keep the required JSON format and factual accuracy rules.'
-    trades = s['brand_name'].strip().casefold()=='trades'
-    if trades:
-        system += '\nTRADES is the duo’s name. Never write trade, traded, or trading, and do not infer they are taking turns at the decks.'
-    no_angles = bool(NO_ANGLES.search(voice+'\n'+custom))
+    blocked = [phrase.strip() for phrase in s['caption_blocklist'].splitlines() if phrase.strip()]
+    block_patterns = [re.compile(r'(?<!\w)'+r'\s+'.join(map(re.escape,phrase.split()))+r'(?!\w)',re.I) for phrase in blocked]
+    if blocked:
+        system += '\nNever use these words or phrases in the caption: '+json.dumps(blocked)
+    camera_rule = s['caption_avoid_camera']
+    no_angles = camera_rule=='avoid' or (camera_rule=='guidance' and bool(NO_ANGLES.search(voice+'\n'+custom)))
+    if no_angles:
+        system += '\nLeave out camera angles, shots and editing.'
     signoffs = list(SIGNOFF.finditer(voice+'\n'+custom))
-    endings = [x.strip() for x in signoffs[-1].groups() if x and x.strip()] if signoffs else []
+    endings = [line.strip() for line in s['caption_signoff'].splitlines() if line.strip()]
+    if not endings and signoffs:
+        endings = [x.strip() for x in signoffs[-1].groups() if x and x.strip()]
+    tags = s['caption_hashtags'].split()
+    if endings:
+        system += '\nFinish with one of these exact sign-offs: '+json.dumps(endings,ensure_ascii=False)
+    if tags:
+        system += '\nWrite only the caption text and sign-off. Reelflow adds the saved hashtags.'
     used = {caption_key(r['caption'],endings) for r in [*previous,*own,*library]}
     openings = {words[:4] for words in used if len(words)>=6}
     facts = {'brand':s['brand_name'],'context':s['business_context'],
@@ -208,12 +227,15 @@ def generate(clip, s):
                 words = caption_key(caption,endings)
                 if no_angles and CAMERA_TALK.search(caption):
                     problem = 'describing how the video was filmed. Avoid mentioning filming, shots, angles, cuts or editing.'
-                elif trades and (any(m.group()!='TRADES' for m in TRADE_WORD.finditer(caption)) or TAKING_TURNS.search(caption)):
-                    problem = 'making a pun on TRADES or claiming the duo takes turns. Use TRADES only as the name, or leave it out.'
-                elif not words or words in used or (len(words)>=6 and words[:4] in openings):
+                elif any(pattern.search(caption) for pattern in block_patterns):
+                    problem = 'using a blocked word or phrase. Follow the operator’s wording rules.'
+                elif not words or (s['caption_unique'] and (words in used or (len(words)>=6 and words[:4] in openings))):
                     problem = 'repeating a recent caption or its opening. Use a different idea and opening words.'
                 else:
-                    return add_signoff(caption,endings),category
+                    result = format_caption(caption,endings,tags)
+                    if len(result)<=400:
+                        return result,category
+                    problem = 'exceeding 400 characters with hashtags and sign-off. Write a shorter draft.'
                 system += '\nYour draft was rejected for '+problem+' Write a completely new caption.'
         raise CaptionError('The model broke a caption rule twice. No new caption was saved.',300)
     except CaptionError:

@@ -14,3 +14,4 @@
 .batch-guidance{max-width:70ch;margin-top:10px}.batch-guidance summary{width:fit-content;cursor:pointer;font-size:13px;font-weight:650}.batch-guidance label.field{margin-bottom:0}
 .rebuild-tools,.clip-export-tools{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;margin:12px 0 18px}.rebuild-tools .help,.clip-export-tools .help{margin:0}
 .post-now-tools{margin-top:22px;padding-top:16px;border-top:1px solid var(--line)}
+.clip-cover{border-block:1px solid var(--line);padding:14px 0;margin:18px 0}.clip-cover img{display:block;max-width:100%;max-height:140px;margin-top:8px;border-radius:5px}.clip-cover .help{margin:6px 0}.clip-cover .inline-actions{margin-top:8px}

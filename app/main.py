@@ -4,6 +4,7 @@ import hmac
 import json
 import re
 import secrets
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -196,6 +197,7 @@ def clips(offset: int=0, limit: int=100):
         raise HTTPException(422,'Invalid page.')
     with connect() as db:
         return [dict(r) for r in db.execute("""SELECT id,name,created_at,duration,status,error,notes,caption,caption_source,category,disabled,
+            cover_manual_ms,cover_auto_ms,cover_color_ms,
             (media_version=? AND status!='error') AS rebuilding FROM clips ORDER BY created_at DESC,id LIMIT ? OFFSET ?""",(media.REBUILD_REQUESTED,limit,offset))]
 
 @app.get('/api/clips/caption-selection')
@@ -231,7 +233,8 @@ class SettingsPatch(BaseModel):
 @app.patch('/api/settings')
 def update_settings(body: SettingsPatch):
     s = settings()
-    caption_fields = ('ai_model','ai_vision','caption_instructions','voice_notes','business_context','brand_name')
+    caption_fields = ('ai_model','ai_vision','caption_instructions','voice_notes','business_context','brand_name',
+                      'caption_blocklist','caption_signoff','caption_hashtags','caption_avoid_camera','caption_unique')
     previous_caption_config = tuple(s[k] for k in caption_fields)
     for key,value in body.values.items():
         if key not in c.DEFAULTS:
@@ -242,6 +245,17 @@ def update_settings(body: SettingsPatch):
         if isinstance(value,str) and len(value)>4000:
             raise HTTPException(422,'Setting too long.')
         s[key] = value
+    if s['cover_mode'] not in media.COVER_MODES or s['export_quality'] not in media.EXPORT_QUALITIES:
+        raise HTTPException(422,'Choose an available cover and export quality setting.')
+    if s['caption_avoid_camera'] not in ('guidance','avoid','allow'):
+        raise HTTPException(422,'Choose an available camera and editing rule.')
+    endings = [line.strip() for line in s['caption_signoff'].splitlines() if line.strip()]
+    if len(endings)>4 or any(len(line)>32 for line in endings):
+        raise HTTPException(422,'Enter up to four sign-offs, each no longer than 32 characters.')
+    tags = s['caption_hashtags'].split()
+    if len(tags)>5 or len({tag.casefold() for tag in tags})!=len(tags) or any(not re.fullmatch(r'#\w{1,50}',tag) for tag in tags):
+        raise HTTPException(422,'Enter up to five distinct hashtags. Start each with # and separate them with spaces or new lines.')
+    s['caption_hashtags'] = ' '.join(tags)
     try:
         ZoneInfo(s['timezone'])
         if s['drought_until']:
@@ -448,6 +462,7 @@ class ClipEdit(BaseModel):
     notes: str = Field(default=None,max_length=3000)
     caption: str = Field(default=None,max_length=2200,min_length=1)
     disabled: bool = None
+    cover_manual_ms: int | None = Field(default=None,ge=0,strict=True)
 
 @app.patch('/api/clips/{clip_id}')
 def clip_edit(clip_id: str, body: ClipEdit):
@@ -456,10 +471,15 @@ def clip_edit(clip_id: str, body: ClipEdit):
         if not clip:
             raise HTTPException(404,'Clip not found.')
         values = body.model_dump(exclude_unset=True)
-        if not values or any(v is None for v in values.values()):
+        if not values or any(v is None for k,v in values.items() if k!='cover_manual_ms'):
             raise HTTPException(422,'Supply an editable field.')
-        if 'disabled' in values and db.execute("SELECT 1 FROM jobs WHERE clip_id=? AND status IN ('processing','publishing')",(clip_id,)).fetchone():
+        if ('disabled' in values or 'cover_manual_ms' in values) and db.execute("SELECT 1 FROM jobs WHERE clip_id=? AND status IN ('processing','publishing')",(clip_id,)).fetchone():
             raise HTTPException(409,'This clip is being published. Pause posting and wait for it to finish.')
+        if 'cover_manual_ms' in values:
+            offset = values['cover_manual_ms']
+            if clip['media_version']!=media.MEDIA_VERSION or (offset is not None and offset>=clip['duration']*1000):
+                raise HTTPException(422,'Choose a frame within the prepared video.')
+            db.execute("UPDATE jobs SET container_id=NULL WHERE clip_id=? AND status IN ('queued','retry')",(clip_id,))
         if 'caption' in values:
             values['caption'] = values['caption'].strip()
             if not values['caption']:
@@ -508,6 +528,24 @@ def preview(clip_id: str, video: bool=False):
     if not path.is_file():
         raise HTTPException(404,'Preview is not ready.')
     return FileResponse(path,media_type='video/mp4' if video else 'image/jpeg')
+
+@app.get('/api/clips/{clip_id}/cover')
+def cover_preview(clip_id: str):
+    if not re.fullmatch(r'[a-f0-9]{64}',clip_id):
+        raise HTTPException(404)
+    with connect() as db:
+        clip = db.execute('SELECT * FROM clips WHERE id=? AND media_version=?',(clip_id,media.MEDIA_VERSION)).fetchone()
+        mode = settings(db)['cover_mode']
+    offset = media.cover_offset(clip,mode) if clip else None
+    if offset is None:
+        raise HTTPException(404,'No cover frame is available yet.')
+    try:
+        jpeg = media.cover_jpeg(c.DATA/'media'/(clip_id+'.mp4'),offset)
+    except (ValueError, subprocess.TimeoutExpired):
+        raise HTTPException(404,'Could not read the cover frame.') from None
+    if not jpeg:
+        raise HTTPException(404,'Could not read the cover frame.')
+    return Response(jpeg,media_type='image/jpeg')
 
 @app.get('/media/{clip_id}')
 def public_media(clip_id: str, expires: int, signature: str):

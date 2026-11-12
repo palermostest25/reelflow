@@ -7,11 +7,16 @@ import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from . import config as c
-from .db import connect, event
+from .db import connect, event, settings
 
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.webm'}
 MEDIA_VERSION = 1
 REBUILD_REQUESTED = -1
+COVER_MODES = ('auto', 'color', 'instagram')
+EXPORT_QUALITIES = {
+    'standard': ('22', '12M', '24M', '128k'),
+    'detail': ('18', '20M', '25M', '192k'),
+}
 
 def run(args, timeout=1800):
     result = subprocess.run(args, capture_output=True, timeout=timeout)
@@ -42,13 +47,81 @@ def fit_frame(limit):
     factor = f'min(1,{limit}/max({width},ih))'
     return f"scale=w='max(2,trunc({width}*{factor}/2)*2)':h='max(2,trunc(ih*{factor}/2)*2)',setsar=1"
 
+def frame_at(path, offset, filters, output):
+    return run(['ffmpeg','-hide_banner','-loglevel','error','-ss',str(offset/1000),'-threads','1','-i',str(path),
+                '-filter_threads','1','-frames:v','1','-vf',filters,'-threads','1',*output,'pipe:1'],15)
+
+def cover_scores(rgb):
+    size = 64
+    if len(rgb) != size*size*3:
+        raise ValueError('Could not read cover frame.')
+    pixels = list(zip(rgb[::3],rgb[1::3],rgb[2::3]))
+    light = [(54*r+183*g+19*b)/256 for r,g,b in pixels]
+    centers = [y*size+x for y in range(8,56) for x in range(8,56)]
+    count = len(centers)
+    detail = sum(abs(light[i]-light[i+1])+abs(light[i]-light[i+size]) for i in centers)/(2*count)
+    exposure = sum(min(1,light[i]/40,(255-light[i])/35) for i in centers)/count
+    color = sum((max(pixels[i])-min(pixels[i]))*min(1,light[i]/45) for i in centers)/(255*count)
+    # A few hard edges in a mostly black frame should not outrank a legible subject.
+    balanced = exposure**2 * (0.55 + 0.45*min(1,detail/20))
+    return balanced, balanced*(1+color*2)
+
+def choose_covers(path, duration):
+    midpoint = round(duration*500)
+    candidates = []
+    for fraction in (.12,.24,.38,.5,.62,.76,.88):
+        offset = round(duration*fraction*1000)
+        try:
+            rgb = frame_at(path,offset,'scale=64:64',['-pix_fmt','rgb24','-f','rawvideo'])
+            balanced, colorful = cover_scores(rgb)
+        except (ValueError, subprocess.TimeoutExpired):
+            continue
+        candidates.append((offset,balanced,colorful))
+    if not candidates:
+        return midpoint,midpoint
+    return tuple(max(candidates,key=lambda row:(row[i],-abs(row[0]-midpoint)))[0] for i in (1,2))
+
+def cover_offset(clip, mode):
+    if clip['cover_manual_ms'] is not None:
+        return clip['cover_manual_ms']
+    if mode == 'instagram':
+        return None
+    return clip['cover_color_ms'] if mode == 'color' else clip['cover_auto_ms']
+
+def cover_jpeg(path, offset):
+    return frame_at(path,offset,fit_frame(720),['-c:v','mjpeg','-q:v','3','-f','image2pipe'])
+
+def prepare_cover(clip_id, duration):
+    path = c.DATA/'media'/(clip_id+'.mp4')
+    if not path.is_file():
+        return
+    auto, color = choose_covers(path,duration)
+    with connect(True) as db:
+        db.execute('UPDATE clips SET cover_auto_ms=?,cover_color_ms=? WHERE id=? AND media_version=? AND cover_auto_ms IS NULL',
+                   (auto,color,clip_id,MEDIA_VERSION))
+
+def backfill_covers():
+    with connect() as db:
+        clips = db.execute("""SELECT id,duration FROM clips WHERE cover_auto_ms IS NULL AND media_version=?
+            AND status IN ('ready','captioning','needs_caption') AND disabled=0
+            ORDER BY COALESCE((SELECT MIN(scheduled_at) FROM jobs WHERE clip_id=clips.id
+                AND status IN ('queued','retry','processing')),1e20),created_at""",(MEDIA_VERSION,)).fetchall()
+    prepared = 0
+    for clip in clips:
+        if (c.DATA/'media'/(clip['id']+'.mp4')).is_file():
+            prepare_cover(clip['id'],clip['duration'])
+            prepared += 1
+            if prepared == 4:
+                break
+
 def process(path, clip_id):
     duration, width, height = probe(path)
+    crf, bitrate, buffer, audio = EXPORT_QUALITIES[settings()['export_quality']]
     with TemporaryDirectory(prefix='.encode-',dir=c.DATA) as workspace:
         temp = Path(workspace) / (clip_id + '.mp4')
         run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
-             '-vf',fit_frame(1920),'-r','30','-c:v','libx264','-preset','veryfast','-crf','22',
-             '-maxrate','12M','-bufsize','24M','-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-ar','48000',
+             '-vf',fit_frame(1920),'-r','30','-c:v','libx264','-preset','veryfast','-crf',crf,
+             '-maxrate',bitrate,'-bufsize',buffer,'-pix_fmt','yuv420p','-c:a','aac','-b:a',audio,'-ar','48000',
              '-movflags','+faststart','-threads','2',str(temp)])
         if temp.stat().st_size > 1_000_000_000:
             raise ValueError('Converted clip exceeds Instagram\'s 1 GB limit.')
@@ -62,11 +135,13 @@ def process(path, clip_id):
         for frame in frames:
             os.replace(frame,c.DATA/'frames'/frame.name)
         os.replace(thumb,c.DATA/'thumbs'/thumb.name)
+        auto, color = choose_covers(temp,duration)
         os.replace(temp,c.DATA/'media'/temp.name)
     with connect(True) as db:
         db.execute("""UPDATE clips SET media_version=?,duration=?,width=?,height=?,error='',
+            cover_auto_ms=?,cover_color_ms=?,cover_manual_ms=CASE WHEN cover_manual_ms < ? THEN cover_manual_ms END,
             status=CASE WHEN status!='processing' THEN status WHEN caption!='' THEN 'ready' ELSE 'captioning' END
-            WHERE id=?""", (MEDIA_VERSION,duration,width,height,clip_id))
+            WHERE id=?""", (MEDIA_VERSION,duration,width,height,auto,color,duration*1000,clip_id))
         # A pending Instagram container still points at the old encode.
         db.execute("UPDATE jobs SET container_id=NULL WHERE clip_id=? AND status IN ('queued','retry','processing')",(clip_id,))
         event('Footage prepared in its original aspect ratio: '+path.name,db=db)

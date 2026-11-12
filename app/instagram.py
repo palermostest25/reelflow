@@ -54,7 +54,7 @@ def connect_account(code):
         db.execute('INSERT OR REPLACE INTO account(id,ig_id,username,expires_at) VALUES(1,?,?,?)',
                    (ig_id,profile['username'],time.time()+long.get('expires_in',5184000)))
         current = settings(db)
-        if not old and current['brand_name']==c.DEFAULTS['brand_name'] and 'trades' not in profile['username'].lower():
+        if not old and current['brand_name']==c.DEFAULTS['brand_name']:
             current['brand_name'] = profile['username']
             db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(current),))
     event('Connected Instagram @'+profile['username']+'. Previous captions will import on the next worker pass.')
@@ -117,6 +117,8 @@ def sync_metrics():
 
 def create_container(account_id, job, url):
     body = {'media_type':'REELS','video_url':url,'caption':job['caption'],'share_to_feed':job['lane']=='main'}
+    if job.get('cover_ms') is not None:
+        body['thumb_offset'] = job['cover_ms']
     if job['lane']=='trial':
         body['trial_params'] = {'graduation_strategy':'MANUAL'}
     return request('POST',account_id+'/media',json=body)['id']

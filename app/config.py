@@ -20,9 +20,12 @@ AI_KEY = os.getenv('AI_API_KEY', '')
 AI_MODEL = os.getenv('AI_MODEL', '')
 
 DEFAULTS = {
-    'brand_name': 'TRADES', "business_context": "Infer this account’s subject and voice from its previous posts. Use footage and operator notes for clip-specific facts.",
+    'brand_name': 'Your workspace', "business_context": "Infer this account’s subject and voice from its previous posts. Use footage and operator notes for clip-specific facts.",
     'voice_notes': 'Short, natural, one or two sentences. No invented locations, bookings, track names or event dates.',
     'caption_instructions': '',
+    'caption_blocklist': '', 'caption_signoff': '', 'caption_hashtags': '',
+    'caption_avoid_camera': 'guidance', 'caption_unique': True,
+    'cover_mode': 'auto', 'export_quality': 'standard',
     'timezone': 'Australia/Perth', 'paused': True, 'dry_run': True,
     'trials_enabled': True, 'trials_per_day': 5, 'main_per_day': 1, 'preview_days': 7, 'low_watermark': 7,
     'posting_start_hour': 8, 'posting_end_hour': 22, 'learn_timing': True,

@@ -140,10 +140,22 @@ def test_paused_during_container_creation_blocks_publish(job,monkeypatch):
 def test_trial_parameters_and_main_feed_are_distinct(monkeypatch):
     seen=[]
     monkeypatch.setattr(ig,'request',lambda *a,**kw:seen.append(kw['json']) or {'id':'container'})
-    ig.create_container('account',{'caption':'A','lane':'trial'},'https://example.test/file')
+    ig.create_container('account',{'caption':'A','lane':'trial','cover_ms':0},'https://example.test/file')
     ig.create_container('account',{'caption':'B','lane':'main'},'https://example.test/file')
     assert seen[0]['trial_params']=={'graduation_strategy':'MANUAL'} and seen[0]['share_to_feed'] is False
     assert 'trial_params' not in seen[1] and seen[1]['share_to_feed'] is True
+    assert seen[0]['thumb_offset']==0 and 'thumb_offset' not in seen[1]
+
+def test_cover_mode_change_refreshes_an_unpublished_container(job,monkeypatch):
+    with connect(True) as db:
+        db.execute('UPDATE clips SET cover_auto_ms=2000,cover_color_ms=3000')
+        db.execute("UPDATE jobs SET status='processing',container_id='old-container',container_cover_ms=2000 WHERE id=?",(job,))
+    set_settings(cover_mode='color')
+    offsets=[]
+    monkeypatch.setattr(ig,'create_container',lambda account,post,url:offsets.append(post['cover_ms']) or 'new-container')
+    monkeypatch.setattr(ig,'publish',lambda *a:'98765')
+    worker.advance(job,time.time())
+    assert offsets==[3000] and row(job)['status']=='published'
 
 def test_processing_container_survives_worker_restart(job,monkeypatch):
     with connect(True) as db:db.execute("UPDATE jobs SET status='processing',container_id='saved-container' WHERE id=?",(job,))
