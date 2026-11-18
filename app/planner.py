@@ -1,10 +1,12 @@
 """Durable two-lane planner. Replans only unpinned pending jobs."""
 import hashlib
 import math
+import re
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from .db import connect, settings, event
+from .songs import groups as song_groups
 
 ACTIVE = ('queued', 'retry')
 
@@ -69,6 +71,71 @@ def runway_days(s, main_count, trial_count, interval):
     cap = daily_limit(s, lane, interval)
     return math.ceil(count/cap)*interval if cap else 0
 
+LOOKAHEAD = 8
+SONG_MEMORY = 4
+
+def natural(name):
+    return [(0,int(x),'') if x.isdigit() else (1,0,x.casefold()) for x in re.split(r'(\d+)',name)]
+
+def running_order(pending, meta, seed, lane):
+    """Target positions: mixed sets spread evenly through the queue; 'post next' sets lead, in order."""
+    def fraction(key):
+        return int(hashlib.sha256((seed+lane+key).encode()).hexdigest()[:12],16)/16**12
+    by_batch = {}
+    for j in pending:
+        by_batch.setdefault(meta[j['clip_id']]['batch'],[]).append(j)
+    position = {}
+    leading = sorted((b for b in by_batch if meta[by_batch[b][0]['clip_id']]['mode']=='next'),
+                     key=lambda b:(meta[by_batch[b][0]['clip_id']]['batch_at'],b))
+    for rank,batch in enumerate(leading):
+        for i,j in enumerate(sorted(by_batch[batch],key=lambda j:natural(meta[j['clip_id']]['name']))):
+            position[j['id']] = -1000000 + rank*10000 + i
+    for batch,members in by_batch.items():
+        if batch in leading:
+            continue
+        offset = fraction('batch:'+batch)
+        members.sort(key=lambda j:fraction(j['clip_id']))
+        for i,j in enumerate(members):
+            position[j['id']] = (i+offset)/len(members)
+    return position
+
+def candidates(pending, position, meta, recent_songs, last):
+    """Clips to try for the next slot, best first.
+
+    1. Never repeat a song sooner than its share of the stock allows (up to five posts apart).
+    2. A song holding half of what is left goes whenever it may, or it would bunch up at the end.
+    3. Near the front of the mix, prefer a different set, then a different scene.
+    """
+    ordered = sorted(pending,key=lambda j:position[j['id']])
+    if ordered and position[ordered[0]['id']] < 0:
+        return ordered  # A set the operator asked to post next keeps its order.
+    remaining = {}
+    for j in ordered:
+        song = meta[j['clip_id']]['song']
+        remaining[song] = remaining.get(song,0)+1
+    total = len(ordered)
+    last_seen = {song:len(recent_songs)-i for i,song in enumerate(recent_songs)}
+    sets = {meta[j['clip_id']]['batch'] for j in ordered}
+    front = {j['id'] for j in ordered[:LOOKAHEAD]}
+    def key(j):
+        m = meta[j['clip_id']]
+        count = remaining[m['song']]
+        need = min(SONG_MEMORY+1, max(2, total//count)) if len(remaining)>1 else 0
+        too_soon = last_seen.get(m['song'],10**6) < need
+        dominant = count*2 >= total+1
+        if j['id'] in front:
+            local = (0, len(sets)>1 and m['batch']==last.get('batch'),
+                     bool(last.get('category')) and j['category']==last.get('category'), position[j['id']])
+        else:
+            local = (1, False, False, position[j['id']])
+        return (too_soon, not dominant, local)
+    return sorted(ordered,key=key)
+
+def clip_meta(db):
+    songs = song_groups(db)
+    rows = db.execute('SELECT c.id,c.name,c.batch,COALESCE(b.mode,\'mix\') mode,COALESCE(b.created_at,c.created_at) batch_at FROM clips c LEFT JOIN intake_batches b ON b.id=c.batch').fetchall()
+    return {r['id']:{'name':r['name'],'batch':r['batch'] or 'set:'+r['id'],'mode':r['mode'],'batch_at':r['batch_at'],'song':songs.get(r['id'],r['id'])} for r in rows}
+
 def plan(now=None):
     now = now or time.time()
     with connect(True) as db:
@@ -84,6 +151,7 @@ def plan(now=None):
         interval = conservation(s, stock_count, now)
         run_day = datetime.fromtimestamp(now, tz).date()
         seed = run_day.isoformat()
+        meta = clip_meta(db)
         # Recompute all flexible jobs so a new intake batch is mingled, never just appended.
         for lane in ('main', 'trial'):
             protected = {j['id'] for j in jobs if j['post_now_at'] or (j['scheduled_at'] and now-1800 <= j['scheduled_at'] <= now+1800)}
@@ -97,9 +165,13 @@ def plan(now=None):
             fixed = db.execute("SELECT clip_id,scheduled_at,published_at FROM jobs WHERE lane=? AND ((status='published' AND post_now_at IS NULL) OR (pinned=1 AND status IN ('queued','retry')) OR status IN ('processing','publishing','uncertain'))", (lane,)).fetchall()
             fixed = list(fixed) + [j for j in jobs if j['lane']==lane and j['id'] in protected and not j['pinned']]
             occupied = [r['published_at'] or r['scheduled_at'] for r in fixed if r['published_at'] or r['scheduled_at']]
-            rank = lambda j: hashlib.sha256((seed + lane + j['clip_id']).encode()).hexdigest()
-            pending.sort(key=rank)
-            last_category = None
+            position = running_order(pending, meta, seed, lane)
+            history = db.execute("""SELECT clip_id FROM jobs WHERE lane=? AND COALESCE(published_at,scheduled_at)<=?
+                AND (status IN ('published','processing','publishing','uncertain') OR id IN (%s))
+                ORDER BY COALESCE(published_at,scheduled_at) DESC LIMIT ?""" % ','.join('?'*len(protected)),
+                (lane,now+1800,*protected,SONG_MEMORY)).fetchall()
+            recent_songs = [meta[r['clip_id']]['song'] for r in reversed(history) if r['clip_id'] in meta]
+            last = {'batch':meta[history[0]['clip_id']]['batch'] if history and history[0]['clip_id'] in meta else None,'category':None}
             for offset in range(366):
                 if not pending:
                     break
@@ -117,7 +189,7 @@ def plan(now=None):
                         continue
                     if any(abs(ts-x) < 5400 for x in occupied):
                         continue
-                    for j in sorted(pending, key=lambda x: (x['category'] == last_category and bool(last_category), rank(x))):
+                    for j in candidates(pending, position, meta, recent_songs, last):
                         other = db.execute("SELECT scheduled_at,published_at FROM jobs WHERE clip_id=? AND lane!=? AND status NOT IN ('rejected','failed')", (j['clip_id'], lane)).fetchone()
                         other_at = (other['published_at'] or other['scheduled_at']) if other else None
                         other_enabled = daily_limit(s,'trial' if lane=='main' else 'main')
@@ -128,7 +200,8 @@ def plan(now=None):
                         continue
                     db.execute('UPDATE jobs SET scheduled_at=?,reason=? WHERE id=?', (ts, ('Footage conservation · every %s days. ' % interval if interval > 1 else '') + reason, j['id']))
                     occupied.append(ts)
-                    last_category = j['category']
+                    recent_songs.append(meta[j['clip_id']]['song'])
+                    last = {'batch':meta[j['clip_id']]['batch'],'category':j['category']}
                     pending.remove(j)
         return {'interval': interval, 'main_remaining': main_count, 'stock_remaining': stock_count,
                 'runway_days': runway_days(s, main_count, trial_count, interval), 'drought_target_days': max(0, (datetime.fromisoformat(s['drought_until']).date() - datetime.fromtimestamp(now,tz).date()).days) if s['drought_until'] else 0}

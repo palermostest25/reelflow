@@ -162,6 +162,38 @@ def settled_file(path, now, *, intake_key=None):
         if not row['done'] and now-row['seen_at']>=30:
             return stat
 
+def local_day(ts, db=None):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(settings(db)['timezone'])
+    except Exception:
+        tz = None  # Before settings exist, the server's timezone is a fine label.
+    when = datetime.fromtimestamp(ts, tz)
+    return f'{when.day} {when:%b %Y}'
+
+def batch_for(path, now, day=None, db=None):
+    """A set is one upload, one subfolder of the footage folder, or one day of loose files."""
+    path = Path(path)
+    day = day or local_day(now, db)
+    uploads = c.DATA/'uploads'
+    if path.is_relative_to(uploads):
+        parts = path.relative_to(uploads).parts
+        if len(parts) > 1:
+            return 'upload:'+parts[0], 'Upload · '+day
+        return 'upload:'+day, 'Uploads · '+day
+    if path.is_relative_to(c.FOOTAGE) and len(path.relative_to(c.FOOTAGE).parts) > 1:
+        folder = str(path.relative_to(c.FOOTAGE).parent)
+        return 'folder:'+folder, folder
+    return 'folder:'+day, 'Footage folder · '+day
+
+def assign_legacy_batches(db):
+    # Earlier installs had no sets; group their clips the same way new intake does.
+    for clip in db.execute("SELECT id,source,created_at FROM clips WHERE batch=''").fetchall():
+        batch, name = batch_for(clip['source'], clip['created_at'], db=db)
+        db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at) VALUES(?,?,?,?)',(batch,name,'mix',clip['created_at']))
+        db.execute('UPDATE clips SET batch=? WHERE id=?',(batch,clip['id']))
+
 def scan(now=None):
     now = now or time.time()
     imported = 0
@@ -183,7 +215,9 @@ def scan(now=None):
                 db.execute('UPDATE files SET done=1 WHERE path=?',(str(path),))
                 if existing:
                     continue
-                db.execute('INSERT INTO clips(id,name,source,created_at) VALUES(?,?,?,?)',(clip_id,path.name,str(path),now))
+                batch, batch_name = batch_for(path, now, db=db)
+                db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at) VALUES(?,?,?,?)',(batch,batch_name,'mix',now))
+                db.execute('INSERT INTO clips(id,name,source,created_at,batch) VALUES(?,?,?,?,?)',(clip_id,path.name,str(path),now,batch))
             imported += 1
             event('New footage found: '+path.name)
     # Rebuild legacy exports from the original, never from the already padded copy.

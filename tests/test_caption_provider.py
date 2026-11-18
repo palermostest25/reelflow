@@ -1,3 +1,4 @@
+import re
 import json
 import time
 import httpx
@@ -50,7 +51,7 @@ def test_reasoning_model_completes_caption_instead_of_using_up_400_token_limit(m
             return httpx.Response(200,json={'choices':[{'finish_reason':'length','message':{'content':None}}], 'usage':{'completion_tokens':422,'completion_tokens_details':{'reasoning_tokens':422}}})
         assert body['reasoning']=={'effort':'minimal','exclude':True}
         assert body['response_format']['json_schema']['strict'] is True
-        assert set(body['response_format']['json_schema']['schema']['required'])=={'caption','category'}
+        assert set(body['response_format']['json_schema']['schema']['required'])=={'caption','category','hashtags'}
         assert body['provider']['require_parameters'] is True
         return httpx.Response(200,json=completion())
     install_transport(monkeypatch,provider)
@@ -182,3 +183,63 @@ def test_catalog_failure_preserves_compatible_completion(monkeypatch):
     monkeypatch.setattr(ai,'model_catalog',offline)
     install_transport(monkeypatch,lambda request:httpx.Response(200,json=completion()))
     assert ai.generate(clip,s)[0]=='Keep the next one rolling.'
+
+
+def test_hashtags_mix_favourites_with_found_tags_and_drop_generic_ones():
+    favourites=['#PerthDJs','#DJDuo','#PerthMusic','#UndergroundDanceMusic']
+    tags=ai.pick_hashtags(['#fyp','PerthDJs','#HouseMusic','#viral','#WarehouseParty','#housemusic','#Techno','#Extra'],favourites,5)
+    assert len(tags)==5 and len({t.casefold() for t in tags})==5
+    assert not {'#fyp','#viral'} & set(tags)
+    assert sum(t in favourites for t in tags)>=2 and '#HouseMusic' in tags and '#WarehouseParty' in tags
+
+
+def test_favourites_rotate_by_least_recent_use_and_fill_short_sets():
+    favourites=['#A1','#B2','#C3','#D4','#E5','#F6']
+    usage=ai.tag_usage(['Caption\n\n#A1 #B2 #C3','Caption\n\n#A1 #B2'])
+    assert ai.pick_hashtags([],favourites,5,usage)==['#D4','#E5','#F6','#C3','#A1']
+    assert ai.pick_hashtags([],[],5)==[] and ai.pick_hashtags(['#Tag1'],favourites,0)==[]
+
+
+def test_blocked_words_also_block_hashtags():
+    blocked=[re.compile(r'(?<!\w)trading(?!\w)',re.I)]
+    # CamelCase tags are read as words, but a brand in capitals is not split up.
+    assert ai.pick_hashtags(['#Trading','#DayTrading','#HouseMusic','#TRADINGPOST'],[],5,blocked=blocked)==['#HouseMusic','#TRADINGPOST']
+    trade=[re.compile(r'(?<!\w)trade(?!\w)',re.I)]
+    assert ai.pick_hashtags(['#TRADES','#TradesDJ','#Trade'],[],5,blocked=trade)==['#TRADES','#TradesDJ']
+
+
+def test_generated_caption_carries_five_hashtags_before_the_signoff(monkeypatch):
+    clip,s=clip_and_settings(monkeypatch)
+    s.update(caption_hashtags='#PerthDJs #DJDuo #PerthMusic',caption_signoff='stv',hashtags_per_post=5)
+    monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
+    seen=[]
+    def provider(request):
+        seen.append(json.loads(request.content)['messages'][0]['content'])
+        return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':json.dumps({
+            'caption':'Another one for the late crowd. #Inline stv','category':'DJ performance',
+            'hashtags':['#PerthDJs','#HouseMusic','#Explore','#ClubNights','#DeepHouse','#WarehouseRave']})}}]})
+    install_transport(monkeypatch,provider)
+    caption,_=ai.generate(clip,s)
+    body,tags=caption.rsplit('\n\n',1)
+    assert body=='Another one for the late crowd.' and tags.endswith(' stv')
+    chosen=tags.removesuffix(' stv').split()
+    assert len(chosen)==5 and '#Inline' not in chosen and '#Explore' not in chosen
+    assert '#PerthDJs' in chosen and sum(t in ('#PerthDJs','#DJDuo','#PerthMusic') for t in chosen)>=2
+    assert 'exactly 5 hashtags' in seen[0] and '#DJDuo' in seen[0]
+
+
+def test_hashtags_can_be_switched_off(monkeypatch):
+    clip,s=clip_and_settings(monkeypatch)
+    s.update(caption_hashtags='#PerthDJs',hashtags_per_post=0)
+    monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
+    install_transport(monkeypatch,lambda r:httpx.Response(200,json=completion('Late one. #Unwanted')))
+    assert ai.generate(clip,s)[0]=='Late one.'
+
+
+def test_hashtag_suggestions_skip_favourites_generic_and_invalid_tags(monkeypatch):
+    clip,s=clip_and_settings(monkeypatch)
+    s.update(caption_hashtags='#PerthDJs')
+    monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
+    reply={'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'hashtags':['#perthdjs','#fyp','#Deep House','TechHouse','#WAClubs','#123']})}}]}
+    install_transport(monkeypatch,lambda r:httpx.Response(200,json=reply))
+    assert ai.suggest_hashtags(s)==['#TechHouse','#WAClubs']

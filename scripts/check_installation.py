@@ -42,4 +42,11 @@ with client.open(request,timeout=10) as response:
     assert response.status==200
 with client.open(base+'/api/state',timeout=10) as response:
     assert response.status==200 and json.load(response)['csrf']
+# Media tools for song matching and funny edits ship inside the image.
+import subprocess
+import cv2
+assert hasattr(cv2,'TrackerCSRT_create') and Path(cv2.data.haarcascades,'haarcascade_frontalface_default.xml').is_file()
+assert b'chromaprint' in subprocess.run(['ffmpeg','-hide_banner','-muxers'],capture_output=True,check=True).stdout
+from app import songs, edits
+assert songs.available()
 print(fingerprint)

@@ -4,7 +4,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 const paths={list:'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',film:'M4 3h16v18H4zM4 7h16M4 17h16M8 3v4M16 3v4M8 17v4M16 17v4',check:'m5 12 4 4L19 6',chart:'M4 20V4M4 20h17M8 16v-4M13 16V8M18 16V5',activity:'M2 12h4l3-8 5 16 3-8h5',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M10 2h4l1 3 3 1 3 2-1 4 1 4-3 2-3 1-1 3h-4l-1-3-3-1-3-2 1-4-1-4 3-2 3-1z',pause:'M8 5v14M16 5v14',play:'m8 4 12 8-12 8z',plus:'M12 4v16M4 12h16',upload:'M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5',arrow:'M4 12h16m-6-6 6 6-6 6',refresh:'M20 7a9 9 0 1 0 1 8M20 2v5h-5',x:'M6 6l12 12M18 6 6 18',edit:'m4 16 12-12 4 4L8 20H4zM13 7l4 4',instagram:'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M17 7h.01',clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v5l3 2',spark:'m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',external:'M14 3h7v7M21 3 10 14M10 3H3v18h18v-7'};
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.film}"/></svg>`;
 function icons(){document.querySelectorAll('[data-icon]').forEach(el=>el.innerHTML=icon(el.dataset.icon));}
-let state, currentPage='', filter='all', offset=0, toastTimer, toastTarget, records=[], renderVersion=0, queueView='schedule', scheduleDraft=null;
+let state, currentPage='', filter='all', libraryView='all', setsOpen=false, offset=0, toastTimer, toastTarget, records=[], renderVersion=0, queueView='schedule', scheduleDraft=null;
 const selectedClips=new Map();
 let guidanceDraft=null, guidanceOpen=false, batchGuidance='', captionBusy=false, captionProgress='', captionFailed=false;
 let youtubeData, youtubeView='queue', youtubeOffset=0, youtubeFocus=null;
@@ -13,8 +13,19 @@ async function api(path, method='GET', data){
  const headers={}; if(state?.csrf)headers['X-CSRF-Token']=state.csrf;
  if(data && !(data instanceof FormData))headers['Content-Type']='application/json';
  const response=await fetch(path,{method,headers,body:data?(data instanceof FormData?data:JSON.stringify(data)):undefined});
- let body;try{body=await response.json();}catch{body={detail:'The server returned an unexpected response.'};}
+ let body;try{body=await response.json();}catch{body={detail:response.status===524||response.status===504?`The request timed out on the way to Reelflow (HTTP ${response.status}).`:`The server returned an unexpected response (HTTP ${response.status}).`};}
  if(!response.ok){if(response.status===401&&path!='/api/login')showLogin();throw new Error(typeof body.detail==='string'?body.detail:'Check the values and try again.');}return body;
+}
+async function rewriteCaption(id,instructions){
+ let result=await api('/api/clips/'+encodeURIComponent(id)+'/regenerate','POST',instructions?{instructions}:undefined);
+ // Slow models finish in the background so a proxy timeout cannot cut the request off.
+ for(let waited=0;result.pending;waited+=3){
+  if(waited>600)throw new Error('The caption model is taking longer than 10 minutes. Check Activity, then retry.');
+  await new Promise(resolve=>setTimeout(resolve,3000));
+  result=await api('/api/rewrites/'+encodeURIComponent(result.token));
+ }
+ if(typeof result.caption!=='string')throw new Error('The server did not return a caption.');
+ return result.caption;
 }
 function toast(message,error=false){const el=$('#editor').open?$('#editor-feedback'):$('#toast');if(toastTarget&&toastTarget!==el)toastTarget.hidden=true;toastTarget=el;el.textContent=message;el.className=error?'error':'';el.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.hidden=true,error?9000:5000);}
 function date(ts,options={}){return ts?new Intl.DateTimeFormat('en-AU',{timeZone:state?.settings.timezone||'Australia/Perth',...options}).format(new Date(ts*1000)):'Not scheduled';}
@@ -57,13 +68,15 @@ async function render(){
   html+=`<p class="queue-note">New footage mixes into flexible slots. Pinned times and edited captions stay in place. Trials stay Trials; automatic sharing to followers is off.</p></section><aside class="operating-summary"><section class="side-section"><h3>Footage runway</h3><div class="runway-figure">${state.runway_days}<span>days, approximately</span></div><p>${s.main_per_day?state.main_remaining:state.trial_remaining} unposted ${s.main_per_day?'grid':'Trial'} Reels. ${state.interval>1?'The conservation pace is active.':'At your configured posting pace.'}</p><div class="stock-track">${Array.from({length:14},(_,i)=>`<b class="${i<state.runway_days?'':'empty'}"></b>`).join('')}</div><a href="#settings" class="button small">Change the posting rhythm ${icon('arrow')}</a></section><section class="side-section"><h3>Two different audiences</h3><p><strong>Trials:</strong> Instagram tests these with non-followers first. They stay off your profile grid unless you share them to everyone in Instagram.</p><p class="help"><strong>Grid:</strong> regular Reels shared to your profile and feed, visible to followers and discovery audiences.</p><p class="help">A follower can still encounter a Trial through a direct share or an audio page.</p></section><section class="side-section"><h3>Make the captions yours</h3><p>Set tone, phrases to avoid, hashtags and other instructions for your caption model.</p><a href="#settings" class="button small">Edit caption instructions ${icon('arrow')}</a></section></aside></div>`;
  }
  if(currentPage==='library'){
-  const clips=await api(`/api/clips?offset=${offset}&limit=50`);
+  const [clips,sets]=await Promise.all([api(`/api/clips?offset=${offset}&limit=50&view=${libraryView}`),api('/api/batches')]);
   if(version!==renderVersion)return;
   records=clips;html=header('Footage library','Drop footage in your watched folder, or upload it here. We’ll take it from there.',`<button class="button" data-action="scan">${icon('refresh')}Scan folder</button>${uploadButton}`);
   html+=`<div class="notice"><p>Watching <code>${esc(state.footage_path)}</code>. Files are deduplicated by content. Originals in this folder are never modified.</p></div>`;
   html+=`<div class="rebuild-tools"><button type="button" class="button" data-action="rebuild-clips">${icon('refresh')}Rebuild all videos</button><p class="help">${state.rebuilding?`${state.rebuilding} video${state.rebuilding===1?'':'s'} waiting to rebuild or being rebuilt. Check Activity for results.`:'Recreate the exports from the originals. Captions and posting history stay in place.'}</p></div>`;
   html+=captionTools();
-  html+=records.length?`<div class="footage-grid">${records.map(clipCard).join('')}</div>`+pager(records.length):empty('Start with the good stuff.','Set your watched folder in Docker, then drop in your clips. Or upload a few here to try the workflow.',uploadButton);
+  html+=setsPanel(sets);
+  html+=`<div class="list-filters tabs" role="group" aria-label="Filter footage">${[['all','All footage'],['unposted','Not posted yet'],['posted','Already posted'],['same_song','Same song']].map(([x,label])=>`<button class="tab ${libraryView===x?'active':''}" data-library-view="${x}" aria-pressed="${libraryView===x}">${label}</button>`).join('')}</div>`;
+  html+=records.length?`<div class="footage-grid">${records.map(clipCard).join('')}</div>`+pager(records.length):libraryView!=='all'?`<p class="empty-filter">${{unposted:'Every clip on this page has been posted at least once.',posted:'Nothing from the library has been posted yet.',same_song:'No repeated songs found yet. Reelflow listens to each prepared clip; matches appear here as they are found.'}[libraryView]}</p>`:empty('Start with the good stuff.','Set your watched folder in Docker, then drop in your clips. Or upload a few here to try the workflow.',uploadButton);
   html+=`<div id="drop-zone" class="drop-zone">${icon('upload')}<strong>Drop footage here</strong><p>MP4, MOV, M4V, MKV or WebM · up to 5 GB per input</p><button class="button small" data-action="upload">Browse files</button><p id="upload-progress" role="status"></p></div>`;
  }
  if(currentPage==='history'){
@@ -354,13 +367,29 @@ function captionTools(){
   <p id="caption-progress" class="help" role="status"></p>
  </section>`;
 }
+const laneName=lane=>lane==='main'?'Grid':'Trial';
+function postedSummary(clip){
+ if(!clip.posts?.length)return '';
+ const lanes=[...new Set(clip.posts.map(p=>laneName(p.lane)))].join(' + ');
+ return `Posted · ${lanes} · ${day(clip.posts[clip.posts.length-1].published_at)}`;
+}
+function songSummary(clip){
+ if(!clip.song_clips)return '';
+ return `Same song · ${clip.song_clips+1} clips${clip.similar?.length?` · ${clip.top_match}% match`:''}`;
+}
+function setsPanel(sets){
+ if(!sets.length)return '';
+ return `<details class="sets-panel" ${setsOpen?'open':''}><summary>Sets & mixing <span class="help">${sets.length} set${sets.length===1?'':'s'} · ${sets.filter(x=>x.mode==='mix').length} mixed in</span></summary>
+ <p class="help">Each upload or subfolder is a set. Mixed sets spread through the queue so you don’t get the same night back to back. Clips with the same song are kept apart too.</p>
+ <div class="sets-list">${sets.map(set=>`<div class="set-row"><div><strong>${esc(set.name)}</strong><span>${set.clips} clip${set.clips===1?'':'s'} · ${set.posted||0} posted · added ${day(set.created_at)}</span></div><select data-set-mode="${esc(set.id)}" aria-label="Posting order for ${esc(set.name)}"><option value="mix" ${set.mode==='mix'?'selected':''}>Mix into the queue</option><option value="next" ${set.mode==='next'?'selected':''}>Keep together, post next</option></select></div>`).join('')}</div></details>`;
+}
 function canRewrite(clip){return !clip.rebuilding&&!['processing','error'].includes(clip.status);}
 function clipCard(clip){
  const id=esc(clip.id), name=esc(clip.name);
  const status=clip.rebuilding?'Rebuilding video':clip.disabled?'Excluded':({ready:'Ready to rotate',captioning:'Writing caption',needs_caption:'Needs a caption',processing:'Preparing',error:'Needs attention'}[clip.status]||clip.status);
  return `<article class="clip-card">
   <button class="clip-poster" data-clip="${id}" aria-label="Review ${name}">${canRewrite(clip)?`<img src="/api/preview/${id}" alt="" loading="lazy">`:icon('film')}${badge(status,clip.status==='ready'&&!clip.disabled&&!clip.rebuilding?'green':'rust')}<span class="clip-duration">${Math.round(clip.duration)}s</span></button>
-  <h3>${name}</h3><p class="clip-caption">${esc(clip.caption||clip.category||clip.caption_source||'Waiting for preparation')}</p>
+  <h3>${name}</h3>${clip.posts?.length||clip.song_clips?`<div class="clip-flags">${clip.posts?.length?`<span class="flag posted">${icon('check')}${esc(postedSummary(clip))}</span>`:''}${clip.song_clips?`<span class="flag song">${esc(songSummary(clip))}</span>`:''}</div>`:''}<p class="clip-caption">${esc(clip.caption||clip.category||clip.caption_source||'Waiting for preparation')}</p>
   ${canRewrite(clip)?`<label class="clip-select"><input type="checkbox" data-caption-select="${id}" aria-label="Select ${name} for caption regeneration">Select</label>`:''}
  </article>`;
 }
@@ -398,8 +427,7 @@ async function regenerateSelected(){
    captionProgress=`Regenerating ${completed+1} of ${batch.length}: ${name}`;
    captionControls();
    try{
-    const result=await api('/api/clips/'+encodeURIComponent(id)+'/regenerate','POST',instructions?{instructions}:undefined);
-    if(typeof result.caption!=='string')throw new Error('The server did not return a caption.');
+    await rewriteCaption(id,instructions);
    }catch(e){
     captionProgress=`${completed} of ${batch.length} regenerated. Stopped at ${name}: ${e.message} Remaining clips are still selected.`;
     captionFailed=true;
@@ -463,7 +491,10 @@ function captionRules(s){
  return `<h3>Caption rules</h3>
  <label>Blocked words and phrases<textarea name="caption_blocklist" maxlength="4000" rows="3">${esc(s.caption_blocklist)}</textarea><span>One per line. The app checks whole words and phrases, ignoring case.</span></label>
  <label>Sign-offs<textarea name="caption_signoff" maxlength="132" rows="2">${esc(s.caption_signoff)}</textarea><span>One allowed ending per line. Leave blank to use quoted sign-offs from your guidance.</span></label>
- <label>Hashtags<textarea name="caption_hashtags" maxlength="255" rows="2" placeholder="#ExampleTag">${esc(s.caption_hashtags)}</textarea><span>Up to five, separated by spaces or line breaks. Added to new AI captions before the sign-off.</span></label>
+ <label>Favourite hashtags<textarea name="caption_hashtags" id="favourite-tags" maxlength="1600" rows="3" placeholder="#PerthDJs #UndergroundDanceMusic #DJDuo">${esc(s.caption_hashtags)}</textarea><span>Up to 30, separated by spaces or line breaks. For each post the caption model picks the favourites that fit the clip and finds the rest itself, rotating so the same set doesn’t repeat. Generic tags like #fyp and #viral are dropped.</span></label>
+ <div class="inline-actions"><button type="button" class="button small" data-action="suggest-tags">${icon('spark')}Suggest more</button></div>
+ <div id="tag-suggestions" class="tag-suggestions" aria-live="polite"></div>
+ ${field('hashtags_per_post','Hashtags per post','number','Instagram allows up to five. 0 leaves hashtags off. Use Regenerate selected in the Footage library to update existing captions.','min="0" max="5"')}
  ${settingSelect('caption_avoid_camera','Camera and editing language',[['guidance','Follow caption guidance'],['avoid','Block it'],['allow','Allow it']])}
  ${toggle('caption_unique','Avoid repeating recent captions','Checks the wording and opening against recent drafts and posts.')}`;
 }
@@ -476,13 +507,27 @@ function reelPresentation(){
 function settingsView(){const s=state.settings;return header('Workspace settings','Set it up once. Come back when you want to change the mix.')+`<form id="settings-form"><div class="settings-grid"><div><section class="settings-section"><h2>Instagram</h2><div class="connection">${icon('instagram')}<div><strong>${state.account?'@'+esc(state.account.username):'No account connected'}</strong><p>${state.account?'Connection expires '+day(state.account.expires_at):'Business or Creator account required'}</p>${badge(state.account?'Connected':'Setup needed',state.account?'green':'')}</div><div class="inline-actions"><a href="/auth/instagram/start" class="button">${state.account?'Reconnect Instagram':'Connect Instagram'} ${icon('arrow')}</a>${state.account?'<button type="button" data-action="disconnect" class="text-button">Disconnect</button>':''}</div><p class="help">${state.meta_configured?'Meta app is configured. Login imports your recent posts on the next worker pass.':'Add META_APP_ID and META_APP_SECRET to compose.yaml, set your public HTTPS URL, and restart Docker. The deployment guide covers the exact redirect URL and permissions.'}</p><p class="help">Redirect URL: <code>${esc(state.public_url)}/auth/instagram/callback</code></p></section><section class="settings-section"><h2>Captions & voice</h2><p>The account’s previous posts lead. These notes steer the result for any artist, business or creator.</p>${field('brand_name','Account / brand name') }<label>What is this account about?<textarea name="business_context">${esc(s.business_context)}</textarea></label><label>Voice & factual guardrails<textarea name="voice_notes" maxlength="4000">${esc(s.voice_notes)}</textarea></label><label>Custom caption instructions<textarea name="caption_instructions" maxlength="4000" placeholder="e.g. Write like us: dry humour, lowercase, no emojis. One short sentence. Never say ‘big things coming’.">${esc(s.caption_instructions)}</textarea><span>Sent to the caption model with every new caption and rewrite. Set tone, wording, hashtags or phrases to avoid. Existing captions stay as they are until you choose Rewrite caption. Factual accuracy and the caption format still apply.</span></label>${captionRules(s)}<div class="connection">${icon('spark')}<div><strong>${state.ai_configured?'AI provider connected':'Connect a caption provider'}</strong><p>${esc(state.ai_base)}</p></div></div><div class="inline-actions"><a href="/auth/openrouter/start" class="button">Sign in with OpenRouter ${icon('arrow')}</a><button type="button" class="button" data-action="models">Load model catalog</button></div><label>Model ID<input name="ai_model" list="model-options" value="${esc(s.ai_model)}" placeholder="Choose a model from the live catalog"><datalist id="model-options"></datalist><span>Use a model that accepts images with visual captions enabled. Model names come from the provider; no assumed model alias.</span></label><label>Or paste an API key<input name="ai_key" type="password" autocomplete="new-password" placeholder="${state.ai_configured?'A key is stored securely. Leave blank to keep it.':'OpenRouter or configured provider API key'}"><span>Encrypted on the server. Never returned to your browser.</span></label>${toggle('ai_vision','Use sampled footage frames','Three silent frames go to your selected AI provider. Disable for text and operator notes only.')}<p class="help">OpenRouter sign-in uses your OpenRouter credit. To use another OpenAI-compatible provider, change AI_BASE_URL in compose.yaml. A missing provider or failed caption holds the clip for review.</p></section>${reelPresentation()}</div><div><section class="settings-section"><h2>The posting rhythm</h2>${field('timezone','Audience timezone','text','Editable until you know where your audience is. Use an IANA name, e.g. Europe/London.')}${toggle('paused','Pause all publishing')}${toggle('dry_run','Dry run','Prepare and review the queue without posting to Instagram.')}${toggle('require_approval','Require approval for new posts','Off means fully automatic. Existing approvals stay as they are.')}${toggle('trials_enabled','Publish Trial Reels','Every clip once. Trials stay Trials; automatic graduation is off.')}<div class="form-row">${field('trials_per_day','Trial Reels per day','number','0 switches Trials off.','min="0" max="10"')}${field('main_per_day','Grid Reels per day','number','0 switches grid posts off.','min="0" max="10"')}</div><div class="form-row">${field('preview_days','Schedule preview (days)','number','','min="1" max="90"')}${field('min_gap_days','Same clip, lane gap (days)','number','','min="0" max="90"')}</div><p class="help">Grid Reels are shared to your profile and feed. Trials reach non-followers first and stay off your grid. Trial eligibility is checked by Instagram when publishing. There is no fallback that silently publishes a Trial to your main feed.</p><h3>Posting times</h3><div class="form-row">${field('posting_start_hour','First posting hour','number','24-hour time, in the audience timezone.','min="0" max="22"')}${field('posting_end_hour','Last posting hour','number','Allow at least 90 minutes between posts to the same destination.','min="1" max="23"')}</div>${toggle('learn_timing','Learn posting times from engagement','Off uses your preferred weekday hour and spreads extra posts across your window.')}<h3>Preferred hour by weekday</h3><div class="week-hours">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=>`<label>${d}<input type="number" name="hour_${i}" min="0" max="23" value="${s.schedule_hours[i]}" aria-label="${d} starting hour"></label>`).join('')}</div><p class="help">24-hour format. One grid slot favours this hour, within your posting window; extra posts and Trials spread across that window. When timing learning is on, five mature same-weekday observations unlock timing choices; every fifth date explores another hour.</p></section><section class="settings-section"><h2>Keep the footage going</h2>${toggle('conserve','Automatically conserve footage','Use the lighter rhythm below when stock is low or a footage break would exhaust the library.')}<div class="form-row">${field('conserve_every_days','Conservation: post every N days','number','','min="2" max="14"')}${field('conserve_main_per_day','Grid Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}</div>${field('conserve_trials_per_day','Trial Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}${field('low_watermark','Low-footage threshold (clips)','number','','min="0" max="365"')}${field('drought_until','No new footage until','date','Clear this date when you are filming again. If your conservation pace still cannot cover the gap, you get an alert.')}<div class="form-row">${field('ntfy_url','ntfy server','url')}${field('ntfy_topic','ntfy topic','text','Use a private topic or an authenticated server.')}</div><label>ntfy access token<input name="ntfy_token" type="password" autocomplete="new-password" placeholder="${state.ntfy_token_set?'Token stored. Leave blank to keep it.':'Optional bearer token'}"></label><button type="button" class="button small" data-action="notify">Send a test notification</button><p class="help">Save changes before testing. Low stock alerts are limited to once per day, failures have durable delivery retries, and post problems include a recovery prompt.</p></section></div></div><div class="save-bar"><button class="primary" type="submit">Save settings ${icon('check')}</button><span>Changes apply to the future queue. Pinned times stay in place.</span></div></form>`;}
 function bindForms(){
  bindCaptionTools();
+ $('.sets-panel')?.addEventListener('toggle',e=>{setsOpen=e.currentTarget.open;});
+ document.querySelectorAll('[data-set-mode]').forEach(select=>select.addEventListener('change',async()=>{select.disabled=true;try{await api('/api/batches/'+encodeURIComponent(select.dataset.setMode),'PATCH',{mode:select.value});toast(select.value==='next'?'This set posts next, in order. The queue has been rebuilt.':'This set is mixed into the queue.');await refresh();}catch(e){toast(e.message,true);select.disabled=false;}}));
  const scheduleForm=$('#schedule-form');if(scheduleForm){scheduleForm.addEventListener('input',()=>{scheduleDraft=Object.fromEntries(['preview_days','trials_per_day','main_per_day'].map(k=>[k,scheduleForm.elements.namedItem(k).value]));});scheduleForm.addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{const values=Object.fromEntries(['preview_days','trials_per_day','main_per_day'].map(k=>[k,Number(form.elements.namedItem(k).value)]));await api('/api/settings','PATCH',{values});scheduleDraft=null;toast('Schedule rebuilt. Publishing controls are unchanged.');await refresh();});});}
  const form=$('#settings-form');if(form)form.addEventListener('submit',async e=>{e.preventDefault();await busy(e.submitter,async()=>{const fd=new FormData(form);const values={};Object.keys(state.settings).forEach(k=>{if(k==='schedule_hours')return;const el=form.elements.namedItem(k);if(!el)return;const type=typeof state.settings[k];values[k]=type==='boolean'?el.checked:type==='number'?Number(el.value):el.value;});values.schedule_hours=Array.from({length:7},(_,i)=>Number(fd.get('hour_'+i)));await api('/api/settings','PATCH',{values});const ai_key=fd.get('ai_key'),ntfy_token=fd.get('ntfy_token');if(ai_key||ntfy_token)await api('/api/keys','POST',{ai_key,ntfy_token});scheduleDraft=null;toast('Settings saved. The future queue has been updated.');await refresh();});});
- const zone=$('#drop-zone');if(zone){zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('dragging');});zone.addEventListener('dragleave',()=>zone.classList.remove('dragging'));zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('dragging');uploadFiles(e.dataTransfer.files);});}
+ const zone=$('#drop-zone');if(zone){zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('dragging');});zone.addEventListener('dragleave',()=>zone.classList.remove('dragging'));zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('dragging');uploadDialog(e.dataTransfer.files);});}
 }
 async function busy(button,fn){if(button)button.disabled=true;try{await fn();}catch(e){toast(e.message,true);}finally{if(button)button.disabled=false;}}
-async function uploadFiles(files,destination='instagram'){for(let i=0;i<files.length;i++){const f=files[i];toast(`Uploading ${i+1}/${files.length}: ${f.name}`);const fd=new FormData();fd.append('file',f);try{await api(destination==='youtube'?'/api/upload?destination=youtube':'/api/upload','POST',fd);}catch(e){toast(e.message,true);return;}}toast(destination==='youtube'?'Set received. It will appear after intake.':'Footage uploaded. The worker will prepare settled files on its next pass.');location.hash=destination==='youtube'?'youtube':'library';await refresh();}
-function chooseUpload(destination='instagram'){let input=document.createElement('input');input.type='file';input.accept='.mp4,.mov,.m4v,.mkv,.webm';input.multiple=true;input.addEventListener('change',()=>uploadFiles(input.files,destination));input.click();}
+function uploadDialog(files){
+ const list=[...files];if(!list.length)return;
+ $('#editor-title').textContent='Add footage';
+ $('#editor-body').innerHTML=`<form id="upload-form"><p class="editor-name">${list.length} video${list.length===1?'':'s'} · ${(bytes=>bytes>=1e9?(bytes/1e9).toFixed(2)+' GB':Math.max(1,Math.round(bytes/1e6))+' MB')(list.reduce((n,f)=>n+f.size,0))}</p>
+ <label class="field">Set name<input name="batch_name" maxlength="80" placeholder="e.g. Mojo's · 14 Nov"><span>Optional. Helps you find this set in the library.</span></label>
+ <fieldset class="field choice"><legend>How should this set post?</legend>
+ <label><input type="radio" name="mode" value="mix" checked><span><strong>Mix it in (recommended)</strong>Spread these clips through the queue alongside earlier sets, so followers get a little of each night.</span></label>
+ <label><input type="radio" name="mode" value="next"><span><strong>Keep together, post next</strong>Post this set before everything else, in filename order. Good for promoting a recent gig.</span></label></fieldset>
+ <div class="drawer-actions"><button class="primary" type="submit">${icon('upload')}Upload ${list.length===1?'video':list.length+' videos'}</button></div></form>`;
+ $('#upload-form').addEventListener('submit',e=>{e.preventDefault();const form=e.currentTarget;$('#editor').close();uploadFiles(list,'instagram',{name:form.elements.batch_name.value.trim(),mode:form.elements.mode.value});});
+ $('#editor').showModal();
+}
+async function uploadFiles(files,destination='instagram',set=null){const batch=destination==='instagram'?Array.from(crypto.getRandomValues(new Uint8Array(10)),b=>b.toString(16).padStart(2,'0')).join(''):'';const query=destination==='youtube'?'?destination=youtube':`?batch=${batch}&mode=${set?.mode||'mix'}&batch_name=${encodeURIComponent(set?.name||'')}`;for(let i=0;i<files.length;i++){const f=files[i];toast(`Uploading ${i+1}/${files.length}: ${f.name}`);const fd=new FormData();fd.append('file',f);try{await api('/api/upload'+query,'POST',fd);}catch(e){toast(e.message,true);return;}}toast(destination==='youtube'?'Set received. It will appear after intake.':'Footage uploaded. The worker will prepare settled files on its next pass.');location.hash=destination==='youtube'?'youtube':'library';await refresh();}
+function chooseUpload(destination='instagram'){let input=document.createElement('input');input.type='file';input.accept='.mp4,.mov,.m4v,.mkv,.webm';input.multiple=true;input.addEventListener('change',()=>destination==='instagram'?uploadDialog(input.files):uploadFiles(input.files,destination));input.click();}
 function postNowControl(job){
  if(postingNow(job))return '<p class="notice post-now-tools">Post now requested. Check Activity for the result.</p>';
  if(!['queued','retry'].includes(job.status))return '';
@@ -527,7 +572,89 @@ function coverControls(clip){
  <button type="button" class="button small" id="clip-cover-reset" ${clip.cover_manual_ms==null?'disabled':''}>Use cover setting</button></div>
  <p class="help">Scrub the video to pick a frame, then save footage.</p></section>`;
 }
-async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)return;let coverOverride;$('#editor-title').textContent='Source material';$('#editor-body').innerHTML=`${clipExport(clip)}${canRewrite(clip)?coverControls(clip):''}<p class="editor-name">${esc(clip.name)}</p><form id="clip-form"><label class="field">Facts & context<textarea name="notes" maxlength="3000" placeholder="Only facts the caption writer should know: venue, track, date, what is happening…">${esc(clip.notes)}</textarea></label><label class="field">Caption<textarea name="caption" maxlength="2200" placeholder="Write a caption, or connect AI in Settings.">${esc(clip.caption)}</textarea><span>Manual captions make prepared footage ready. Upcoming posts with edited captions keep their own version.</span></label><label class="toggle field"><span>Exclude this clip from future posting</span><input type="checkbox" name="disabled" ${clip.disabled?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save footage</button><button class="button" type="button" data-regenerate="${clip.id}" ${canRewrite(clip)?'':'disabled'}>${icon('spark')}Rewrite caption</button></div>${clip.status==='ready'&&!clip.disabled&&!clip.rebuilding&&clip.duration<=180?`<div class="youtube-drawer-actions"><button type="button" class="button" data-create-short="${clip.id}">${icon('play')}Create YouTube Short draft</button></div>`:''}${clip.error?`<p class="editor-error">${esc(clip.error)}</p>`:''}${clip.status==='error'?`<button type="button" class="button" data-retry-clip="${clip.id}">Retry preparation</button>`:''}</form>`;$('#clip-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{let body={notes:form.elements.notes.value,disabled:form.elements.disabled.checked};if(form.elements.caption.value.trim())body.caption=form.elements.caption.value.trim();if(coverOverride!==undefined)body.cover_manual_ms=coverOverride;await api('/api/clips/'+clip.id,'PATCH',body);$('#editor').close();toast('Footage updated.');await refresh();});});const video=$('#editor .clip-export');
+const fmtTime=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}.${Math.floor((t%1)*10)}`;
+async function openEditTool(id){
+ let clip=records.find(r=>r.id===id);if(!clip)[clip]=await api('/api/clips?only='+encodeURIComponent(id)+'&limit=1');if(!clip)return;
+ const url='/api/preview/'+encodeURIComponent(id);
+ $('#editor-title').textContent='Funny edit';
+ $('#editor-body').innerHTML=`<p class="editor-name">${esc(clip.name)}</p>
+ <div class="edit-stage"><video id="edit-video" src="${url}?video=true" poster="${url}" playsinline preload="auto"></video><canvas id="edit-canvas" aria-label="Video frame. Drag a box around the person to follow."></canvas></div>
+ <div class="edit-transport"><button type="button" class="icon-button" id="edit-play" aria-label="Play">${icon('play')}</button><input type="range" id="edit-seek" min="0" max="${clip.duration}" step="0.033" value="0" aria-label="Position in the clip"><span id="edit-time" class="help">0:00.0</span></div>
+ <p class="help" id="edit-hint" role="status">Pause on the moment, then drag a box around the person’s head. Tap a dashed box to use a detected face.</p>
+ <form id="edit-form">
+ <fieldset class="field edit-effects"><legend>Effects</legend>
+ ${[['arrow','Arrow',true],['circle','Circle',true],['spotlight','Spotlight',false],['zoom','Zoom punch-in',false]].map(([v,l,on])=>`<label><input type="checkbox" name="effects" value="${v}" ${on?'checked':''}>${l}</label>`).join('')}
+ </fieldset>
+ <label class="field">Label<input name="label" maxlength="40" placeholder="e.g. this guy"><span>Optional. Shown by the arrow in bold capitals.</span></label>
+ <label class="field">How long<select name="effect_length"><option value="3">3 seconds</option><option value="5" selected>5 seconds</option><option value="8">8 seconds</option><option value="12">12 seconds</option><option value="0">Until the end</option></select></label>
+ <label class="toggle field"><span>Replace the original in the queue</span><input type="checkbox" name="replace" checked></label><p class="help">The original is excluded from future posting. Its file and history stay.</p>
+ <div class="drawer-actions"><button class="primary" type="submit" id="edit-render" disabled>${icon('spark')}Render edit</button><button class="button" type="button" data-open-clip="${clip.id}">Back</button></div>
+ <progress id="edit-progress" max="1" value="0" hidden></progress>
+ </form>`;
+ const video=$('#edit-video'),canvas=$('#edit-canvas'),seek=$('#edit-seek'),hint=$('#edit-hint'),render=$('#edit-render'),play=$('#edit-play');
+ let box=null,boxAt=0,faces=[],drag=null,faceTimer;
+ const rect=()=>{const w=video.clientWidth,h=video.clientHeight,vw=video.videoWidth||9,vh=video.videoHeight||16;const s=Math.min(w/vw,h/vh);return {x:(w-vw*s)/2,y:(h-vh*s)/2,w:vw*s,h:vh*s};};
+ const toFrame=(px,py)=>{const r=rect();return {x:Math.min(1,Math.max(0,(px-r.x)/r.w)),y:Math.min(1,Math.max(0,(py-r.y)/r.h))};};
+ function paint(){
+  const dpr=window.devicePixelRatio||1;canvas.width=video.clientWidth*dpr;canvas.height=video.clientHeight*dpr;
+  const g=canvas.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,canvas.width,canvas.height);const r=rect();
+  const outline=(b,style,dash)=>{g.setLineDash(dash);g.lineWidth=2.5;g.strokeStyle=style;g.strokeRect(r.x+b.x*r.w,r.y+b.y*r.h,b.w*r.w,b.h*r.h);};
+  if(!box)faces.forEach(f=>outline(f,'rgba(255,255,255,.9)',[6,5]));
+  if(box){g.fillStyle='rgba(164,52,33,.18)';g.fillRect(r.x+box.x*r.w,r.y+box.y*r.h,box.w*r.w,box.h*r.h);outline(box,'#e8382b',[]);}
+ }
+ function setBox(b){box=b;boxAt=video.currentTime;render.disabled=!box;hint.textContent=box?`Following from ${fmtTime(boxAt)}. Drag again to redo, or render.`:'Pause on the moment, then drag a box around the person’s head. Tap a dashed box to use a detected face.';paint();}
+ async function findFaces(){
+  faces=[];paint();if(!video.paused)return;
+  try{const t=video.currentTime;const data=await api(`/api/clips/${encodeURIComponent(id)}/faces?t=${t.toFixed(2)}`);if(Math.abs(video.currentTime-t)<.05&&video.paused){faces=data.faces;if(!box&&faces.length)hint.textContent=`${faces.length} face${faces.length===1?'':'s'} found. Tap one, or drag your own box.`;paint();}}catch{}
+ }
+ const moved=()=>{seek.value=video.currentTime;$('#edit-time').textContent=fmtTime(video.currentTime);if(box&&Math.abs(video.currentTime-boxAt)>.04)setBox(null);};
+ video.addEventListener('timeupdate',moved);video.addEventListener('seeked',()=>{moved();clearTimeout(faceTimer);faceTimer=setTimeout(findFaces,250);});
+ video.addEventListener('loadeddata',()=>{paint();findFaces();});video.addEventListener('pause',()=>{play.innerHTML=icon('play');play.setAttribute('aria-label','Play');findFaces();});
+ video.addEventListener('play',()=>{play.innerHTML=icon('pause');play.setAttribute('aria-label','Pause');faces=[];setBox(null);});
+ play.addEventListener('click',()=>video.paused?video.play():video.pause());
+ seek.addEventListener('input',()=>{video.pause();video.currentTime=Number(seek.value);});
+ window.addEventListener('resize',paint);
+ canvas.addEventListener('pointerdown',e=>{video.pause();const b=canvas.getBoundingClientRect();drag={start:toFrame(e.clientX-b.left,e.clientY-b.top)};drag.end=drag.start;canvas.setPointerCapture(e.pointerId);});
+ canvas.addEventListener('pointermove',e=>{if(!drag)return;const b=canvas.getBoundingClientRect();drag.end=toFrame(e.clientX-b.left,e.clientY-b.top);const a=drag.start,z=drag.end;box={x:Math.min(a.x,z.x),y:Math.min(a.y,z.y),w:Math.abs(z.x-a.x),h:Math.abs(z.y-a.y)};paint();});
+ canvas.addEventListener('pointerup',()=>{if(!drag)return;const a=drag.start,z=drag.end;drag=null;const r=rect();
+  if(Math.abs(z.x-a.x)*r.w<12&&Math.abs(z.y-a.y)*r.h<12){
+   const hit=faces.find(f=>a.x>=f.x&&a.x<=f.x+f.w&&a.y>=f.y&&a.y<=f.y+f.h);
+   if(hit)return setBox({...hit});
+   const side=Math.min(r.w,r.h)*.18,w=side/r.w,h=side/r.h;return setBox({x:Math.min(Math.max(0,a.x-w/2),1-w),y:Math.min(Math.max(0,a.y-h/2),1-h),w,h});
+  }
+  setBox({x:Math.min(a.x,z.x),y:Math.min(a.y,z.y),w:Math.max(.02,Math.abs(z.x-a.x)),h:Math.max(.02,Math.abs(z.y-a.y))});
+ });
+ canvas.addEventListener('keydown',e=>{if(e.key===' '){e.preventDefault();play.click();}});
+ $('#edit-form').addEventListener('submit',async e=>{
+  e.preventDefault();const form=e.currentTarget;const effects=[...form.querySelectorAll('[name=effects]:checked')].map(x=>x.value);
+  if(!box){toast('Mark the person first.',true);return;}if(!effects.length){toast('Choose at least one effect.',true);return;}
+  const progress=$('#edit-progress');
+  await busy(e.submitter,async()=>{
+   const {id:editId}=await api(`/api/clips/${encodeURIComponent(id)}/edits`,'POST',{start:boxAt,box:{x:box.x,y:box.y,w:Math.min(box.w,1-box.x),h:Math.min(box.h,1-box.y)},effects,label:form.elements.label.value.trim(),length:Number(form.elements.effect_length.value),replace:form.elements.replace.checked});
+   progress.hidden=false;hint.textContent='Tracking and rendering… keep this open or come back later; the edit saves to the library either way.';
+   for(;;){
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const status=await api('/api/edits/'+editId);progress.value=status.progress;
+    if(status.status==='done'){$('#editor').close();toast('Edit saved to the library. It joins the queue once prepared, usually within a couple of minutes.');await refresh();return;}
+    if(status.status==='error')throw new Error(status.message);
+    if(!$('#editor').open)return;
+   }
+  });
+ });
+ if(!$('#editor').open)$('#editor').showModal();
+}
+function clipHistory(clip){
+ const posts=clip.posts||[];
+ return `<section class="clip-history"><h3>Posting history</h3>${posts.length?`<ul>${posts.map(p=>`<li>${laneTag(p.lane)} <span>${day(p.published_at)} · ${clock(p.published_at)}</span>${p.permalink?` <a href="${esc(p.permalink)}" target="_blank" rel="noopener">Open on Instagram</a>`:''}</li>`).join('')}</ul>`:'<p class="help">Not posted yet.</p>'}</section>`;
+}
+function clipSong(clip){
+ const state_=!state.song_matching?'Audio matching needs FFmpeg with Chromaprint. Name songs here to keep them apart.':clip.audio_state===2?'No usable audio in this clip.':clip.audio_state===0?'Listening for repeats once the clip is prepared.':clip.similar?.length?'':'No other clip plays this song so far.';
+ return `<section class="clip-song"><h3>Song</h3>
+ <label class="field">Song name<input name="song" maxlength="120" value="${esc(clip.song||'')}" placeholder="Optional · e.g. the track title"><span>Clips with the same name are treated as one song. Give a clip its own name to split it from a wrong match.</span></label>
+ ${clip.similar?.length?`<p class="help">Same song in ${clip.similar.length} other clip${clip.similar.length===1?'':'s'}. Reelflow keeps them apart in the queue.</p><ul class="similar-list">${clip.similar.map(m=>`<li><button type="button" class="similar-clip" data-open-clip="${esc(m.id)}"><img src="/api/preview/${esc(m.id)}" alt="" loading="lazy"><span>${esc(m.name)}</span><strong>${m.score}%</strong></button></li>`).join('')}</ul><p class="help">Percentages are audio-fingerprint matches. Around 100% is the same moment of the track; lower scores are a repeated loop or section.</p>`:clip.song_clips?`<p class="help">Named the same as ${clip.song_clips} other clip${clip.song_clips===1?'':'s'}.</p>`:`<p class="help">${state_}</p>`}
+ </section>`;
+}
+async function openClip(id){let clip=records.find(r=>r.id===id);if(!clip){[clip]=await api('/api/clips?only='+encodeURIComponent(id)+'&limit=1');}if(!clip)return;let coverOverride;$('#editor-title').textContent='Source material';$('#editor-body').innerHTML=`${clipExport(clip)}${canRewrite(clip)?coverControls(clip):''}<p class="editor-name">${esc(clip.name)}</p><form id="clip-form"><label class="field">Facts & context<textarea name="notes" maxlength="3000" placeholder="Only facts the caption writer should know: venue, track, date, what is happening…">${esc(clip.notes)}</textarea></label><label class="field">Caption<textarea name="caption" maxlength="2200" placeholder="Write a caption, or connect AI in Settings.">${esc(clip.caption)}</textarea><span>Manual captions make prepared footage ready. Upcoming posts with edited captions keep their own version.</span></label>${clipSong(clip)}${clipHistory(clip)}<label class="toggle field"><span>Exclude this clip from future posting</span><input type="checkbox" name="disabled" ${clip.disabled?'checked':''}></label><div class="drawer-actions"><button class="primary" type="submit">Save footage</button><button class="button" type="button" data-regenerate="${clip.id}" ${canRewrite(clip)?'':'disabled'}>${icon('spark')}Rewrite caption</button>${canRewrite(clip)&&clip.status!=='processing'?`<button class="button" type="button" data-funny-edit="${clip.id}">${icon('edit')}Funny edit</button>`:''}</div>${clip.status==='ready'&&!clip.disabled&&!clip.rebuilding&&clip.duration<=180?`<div class="youtube-drawer-actions"><button type="button" class="button" data-create-short="${clip.id}">${icon('play')}Create YouTube Short draft</button></div>`:''}${clip.error?`<p class="editor-error">${esc(clip.error)}</p>`:''}${clip.status==='error'?`<button type="button" class="button" data-retry-clip="${clip.id}">Retry preparation</button>`:''}</form>`;$('#clip-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;await busy(e.submitter,async()=>{let body={notes:form.elements.notes.value,disabled:form.elements.disabled.checked,song:form.elements.song.value};if(form.elements.caption.value.trim())body.caption=form.elements.caption.value.trim();if(coverOverride!==undefined)body.cover_manual_ms=coverOverride;await api('/api/clips/'+clip.id,'PATCH',body);$('#editor').close();toast('Footage updated.');await refresh();});});const video=$('#editor .clip-export');
  if(video){
   const label=$('#clip-export-size');
   const pick=$('#clip-cover-pick'), reset=$('#clip-cover-reset'), coverLabel=$('#clip-cover-label'), preview=$('#clip-cover-preview');
@@ -552,7 +679,7 @@ async function openClip(id){const clip=records.find(r=>r.id===id);if(!clip)retur
   video.addEventListener('loadedmetadata',size);
   size();
  }
- $('#editor').showModal();}
+ if(!$('#editor').open)$('#editor').showModal();}
 $('#close-editor').addEventListener('click',()=>{$('#editor video')?.pause();$('#editor').close();});
 $('#editor').addEventListener('close',()=>$('#editor video')?.pause());
 $('#pause-button').addEventListener('click',e=>busy(e.currentTarget,async()=>{await api('/api/settings','PATCH',{values:{paused:!state.settings.paused}});await refresh();toast(state.settings.paused?'Publishing paused.':'Queue resumed'+(state.settings.dry_run?' in dry-run mode.':'.'));}));
@@ -560,9 +687,9 @@ $('#logout').addEventListener('click',()=>busy($('#logout'),async()=>{if(state.d
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;$('#login-error').textContent='';try{await api('/api/login','POST',{password:form.elements.password.value});form.reset();await start();}catch(err){$('#login-error').textContent=err.message;}});
 window.addEventListener('hashchange',()=>{offset=0;filter='all';if(state)render().catch(e=>toast(e.message,true));});
 document.addEventListener('click',async e=>{
- const target=e.target.closest('button');if(!target)return;
+ const target=e.target.closest('button');if(!target)return;if(target.dataset.addTag){const area=$('#favourite-tags');const have=area.value.split(/\s+/).filter(Boolean);if(!have.some(t=>t.toLowerCase()===target.dataset.addTag.toLowerCase()))area.value=[...have,target.dataset.addTag].join(' ');target.disabled=true;return;}
  if(target.dataset.queueView){queueView=target.dataset.queueView;offset=0;await render();return;}
- if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}
+ if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}if(target.dataset.libraryView){libraryView=target.dataset.libraryView;offset=0;await render();return;}if(target.dataset.openClip){await openClip(target.dataset.openClip);return;}if(target.dataset.funnyEdit){await openEditTool(target.dataset.funnyEdit);return;}
  if(target.dataset.createShort){await busy(target,async()=>{
   const result=await api('/api/youtube/shorts','POST',{clip_id:target.dataset.createShort});
   $('#editor').close();
@@ -571,7 +698,7 @@ document.addEventListener('click',async e=>{
  if(target.dataset.job){await openJob(target.dataset.job);return;}
  if(target.dataset.clip){await openClip(target.dataset.clip);return;}
  if(target.dataset.retryClip){await busy(target,async()=>{await api('/api/clips/'+target.dataset.retryClip+'/retry','POST');$('#editor').close();toast('Preparation will retry on the next worker pass.');await refresh();});return;}
- if(target.dataset.regenerate){if(captionBusy){toast('Wait for the caption operation to finish.');return;}await busy(target,async()=>{await api('/api/clips/'+target.dataset.regenerate+'/regenerate','POST');$('#editor').close();toast('A fresh caption is ready.');await refresh();});return;}
+ if(target.dataset.regenerate){if(captionBusy){toast('Wait for the caption operation to finish.');return;}await busy(target,async()=>{await rewriteCaption(target.dataset.regenerate);$('#editor').close();toast('A fresh caption is ready.');await refresh();});return;}
  if(target.dataset.postNow){
   const caption=$('#job-form textarea[name="caption"]');
   if(caption&&caption.value.trim()!==caption.defaultValue.trim()){
@@ -585,6 +712,7 @@ document.addEventListener('click',async e=>{
  }
  if(target.dataset.jobAction){await busy(target,async()=>{await api('/api/jobs/'+target.dataset.id+'/action','POST',{action:target.dataset.jobAction,media_id:$('#resolved-media-id')?.value||''});$('#editor').close();if(target.dataset.jobAction==='confirm_removed'){queueView='list';location.hash='queue';toast('Reel requeued for review. Use Post now when you’re ready.');}else toast('Post state updated.');await refresh();});return;}
  const a=target.dataset.action;if(!a)return;
+ if(a==='suggest-tags'){await busy(target,async()=>{const box=$('#tag-suggestions');const {hashtags}=await api('/api/hashtags/suggest','POST');box.innerHTML=hashtags.length?`<p class="help">Click a tag to add it to your favourites, then save settings.</p>${hashtags.map(t=>`<button type="button" class="tag-chip" data-add-tag="${esc(t)}">${esc(t)}</button>`).join('')}`:'<p class="help">No new suggestions. Try adding more context about the account.</p>';});return;}
  if(a==='select-clips'||a==='clear-clips'){
   if(captionBusy)return;
   if(a==='clear-clips'){selectedClips.clear();batchGuidance='';}

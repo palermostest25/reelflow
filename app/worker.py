@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from . import config as c
 from .db import init, connect, settings, event, runtime
-from . import media, ai, instagram as ig, notifications as ntfy
+from . import media, ai, songs, instagram as ig, notifications as ntfy
 from .planner import plan, daily_limit, conservation
 from .security import media_url
 
@@ -215,6 +215,10 @@ def tick():
         media.scan()
         if settings()['cover_mode']!='instagram':
             media.backfill_covers()
+        try:
+            songs.analyse_pending()
+        except Exception:
+            log.warning('Song matching skipped this pass; posting continues without it.')
         ai.caption_pending()
         summary = plan()
         ntfy.stock_alert(summary)

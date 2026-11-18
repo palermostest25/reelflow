@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 import subprocess
+import threading
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -23,7 +24,7 @@ from . import config as c
 from .db import init, connect, settings, secret, event, runtime
 from .planner import plan, conservation, daily_limit, runway_days
 from .security import verify_media
-from . import instagram as ig, ai, media, notifications as ntfy
+from . import instagram as ig, ai, media, songs, notifications as ntfy
 from .worker import tick, send_post_now
 from .youtube_api import router as youtube_router
 
@@ -38,6 +39,8 @@ for name, digest in ASSETS.items():
 @asynccontextmanager
 async def lifespan(app):
     init()
+    from . import edits
+    edits.recover()
     yield
 
 app = FastAPI(title='Reelflow',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
@@ -147,7 +150,7 @@ def state(request: Request):
             'next_post':dict(next_post) if next_post else None,'heartbeat':runtime('heartbeat'),
             'csrf':request.session.get('csrf',''),'demo':c.DEMO,'meta_configured':bool(c.META_ID and c.META_SECRET),
             'ai_configured':bool(ai.api_key()),'ai_base':c.AI_BASE,'ntfy_token_set':bool(secret('ntfy_token')),
-            'metric_samples':metric_count,'public_url':c.PUBLIC_URL,'footage_path':str(c.FOOTAGE)}
+            'metric_samples':metric_count,'public_url':c.PUBLIC_URL,'footage_path':str(c.FOOTAGE),'song_matching':songs.available()}
 
 @app.get('/api/schedule')
 def schedule(days: int = None):
@@ -195,13 +198,68 @@ def jobs(status: str='upcoming', lane: str='', offset: int=0, limit: int=100):
         return [dict(r) for r in db.execute('SELECT j.*,c.name,c.duration,c.category,c.disabled FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE '+filters[status]+(' AND j.lane=?' if lane else '')+' ORDER BY COALESCE(j.scheduled_at,99999999999),j.id LIMIT ? OFFSET ?',((lane,) if lane else ())+(limit,offset))]
 
 @app.get('/api/clips')
-def clips(offset: int=0, limit: int=100):
+def clips(offset: int=0, limit: int=100, view: Literal['all','unposted','posted','same_song']='all', only: str=''):
     if offset<0 or not 1<=limit<=200:
         raise HTTPException(422,'Invalid page.')
+    filters = {'all':'1=1',
+        'posted':"EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status='published')",
+        'unposted':"NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status='published')"}
     with connect() as db:
-        return [dict(r) for r in db.execute("""SELECT id,name,created_at,duration,status,error,notes,caption,caption_source,category,disabled,
-            cover_manual_ms,cover_auto_ms,cover_color_ms,
-            (media_version=? AND status!='error') AS rebuilding FROM clips ORDER BY created_at DESC,id LIMIT ? OFFSET ?""",(media.REBUILD_REQUESTED,limit,offset))]
+        groups = songs.groups(db)
+        sizes = {}
+        for key in groups.values():
+            sizes[key] = sizes.get(key,0)+1
+        where = filters.get(view)
+        if view=='same_song':
+            ids = [cid for cid,key in groups.items() if sizes[key]>1]
+            where = 'c.id IN (%s)' % ','.join('?'*len(ids))
+            params = tuple(ids)
+        elif only:
+            where, params = 'c.id=?', (only,)
+        else:
+            params = ()
+        rows = [dict(r) for r in db.execute("""SELECT c.id,c.name,c.created_at,c.duration,c.status,c.error,c.notes,c.caption,c.caption_source,c.category,c.disabled,
+            c.cover_manual_ms,c.cover_auto_ms,c.cover_color_ms,c.song,c.audio_state,c.batch,c.edit_of,b.name AS batch_name,b.mode AS batch_mode,
+            (c.media_version=? AND c.status!='error') AS rebuilding FROM clips c LEFT JOIN intake_batches b ON b.id=c.batch
+            WHERE """+where+""" ORDER BY c.created_at DESC,c.id LIMIT ? OFFSET ?""",(media.REBUILD_REQUESTED,*params,limit,offset))]
+        ids = [r['id'] for r in rows]
+        marks = ','.join('?'*len(ids))
+        posts = db.execute(f"SELECT clip_id,lane,published_at,permalink FROM jobs WHERE status='published' AND clip_id IN ({marks}) ORDER BY published_at",ids).fetchall() if ids else []
+        matches = db.execute(f"""SELECT m.a,m.b,m.score,ca.name AS a_name,cb.name AS b_name FROM song_matches m
+            JOIN clips ca ON ca.id=m.a JOIN clips cb ON cb.id=m.b WHERE m.a IN ({marks}) OR m.b IN ({marks}) ORDER BY m.score DESC""",ids*2).fetchall() if ids else []
+    for r in rows:
+        key = groups.get(r['id'])
+        r['posts'] = [{'lane':p['lane'],'published_at':p['published_at'],'permalink':p['permalink']} for p in posts if p['clip_id']==r['id']]
+        r['song_clips'] = sizes.get(key,1)-1
+        r['similar'] = [{'id':m['b'] if m['a']==r['id'] else m['a'],'name':m['b_name'] if m['a']==r['id'] else m['a_name'],'score':m['score']}
+                        for m in matches if r['id'] in (m['a'],m['b'])][:12]
+        r['top_match'] = r['similar'][0]['score'] if r['similar'] else (100 if r['song_clips'] else 0)
+        r['song_named'] = bool(r['song'])
+    return rows
+
+@app.get('/api/batches')
+def batches():
+    with connect() as db:
+        return [dict(r) for r in db.execute("""SELECT b.*,COUNT(c.id) AS clips,
+            SUM(EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status='published')) AS posted
+            FROM intake_batches b JOIN clips c ON c.batch=b.id GROUP BY b.id ORDER BY b.created_at DESC LIMIT 50""")]
+
+class BatchEdit(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(default=None,min_length=1,max_length=80)
+    mode: Literal['mix','next'] = None
+
+@app.patch('/api/batches/{batch_id:path}')
+def batch_edit(batch_id: str, body: BatchEdit):
+    values = {k:(v.strip() if isinstance(v,str) else v) for k,v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not values or values.get('name')=='':
+        raise HTTPException(422,'Supply a set name or posting order.')
+    with connect(True) as db:
+        if db.execute('UPDATE intake_batches SET '+','.join(k+'=?' for k in values)+' WHERE id=?',(*values.values(),batch_id)).rowcount!=1:
+            raise HTTPException(404,'Set not found.')
+        event('Set updated: '+db.execute('SELECT name FROM intake_batches WHERE id=?',(batch_id,)).fetchone()[0]+('. Posting it next, in order.' if values.get('mode')=='next' else '. Mixed into the queue.' if values.get('mode')=='mix' else '.'),db=db)
+    plan()
+    return {'ok':True}
 
 @app.get('/api/clips/caption-selection')
 def caption_selection():
@@ -237,7 +295,7 @@ class SettingsPatch(BaseModel):
 def update_settings(body: SettingsPatch):
     s = settings()
     caption_fields = ('ai_model','ai_vision','caption_instructions','voice_notes','business_context','brand_name',
-                      'caption_blocklist','caption_signoff','caption_hashtags','caption_avoid_camera','caption_unique')
+                      'caption_blocklist','caption_signoff','caption_hashtags','hashtags_per_post','caption_avoid_camera','caption_unique')
     previous_caption_config = tuple(s[k] for k in caption_fields)
     for key,value in body.values.items():
         if key not in c.DEFAULTS:
@@ -255,9 +313,17 @@ def update_settings(body: SettingsPatch):
     endings = [line.strip() for line in s['caption_signoff'].splitlines() if line.strip()]
     if len(endings)>4 or any(len(line)>32 for line in endings):
         raise HTTPException(422,'Enter up to four sign-offs, each no longer than 32 characters.')
-    tags = s['caption_hashtags'].split()
-    if len(tags)>5 or len({tag.casefold() for tag in tags})!=len(tags) or any(not re.fullmatch(r'#\w{1,50}',tag) for tag in tags):
-        raise HTTPException(422,'Enter up to five distinct hashtags. Start each with # and separate them with spaces or new lines.')
+    tags = []
+    for tag in s['caption_hashtags'].replace(',',' ').split():
+        tag = '#'+tag.lstrip('#')
+        if not re.fullmatch(r'#\w{1,50}',tag):
+            raise HTTPException(422,'Hashtags can use letters, numbers and underscores only: '+tag[:52])
+        if tag.casefold() not in {t.casefold() for t in tags}:
+            tags.append(tag)
+    if len(tags)>ai.MAX_FAVOURITES:
+        raise HTTPException(422,'Keep up to %d favourite hashtags. Reelflow picks five per post from them and its own finds.' % ai.MAX_FAVOURITES)
+    if not 0<=s['hashtags_per_post']<=ai.MAX_TAGS:
+        raise HTTPException(422,'Instagram allows up to five hashtags per post. Choose 0 to 5.')
     s['caption_hashtags'] = ' '.join(tags)
     try:
         ZoneInfo(s['timezone'])
@@ -331,7 +397,7 @@ def notification_test(background: BackgroundTasks):
     return {'ok':True,'message':'Test notification queued. Delivery appears in Activity.'}
 
 @app.post('/api/upload')
-async def upload(file: UploadFile, destination: Literal['instagram','youtube']='instagram'):
+async def upload(file: UploadFile, destination: Literal['instagram','youtube']='instagram', batch: str='', batch_name: str='', mode: Literal['mix','next']='mix'):
     from .media import EXTENSIONS
     suffix = Path(file.filename or '').suffix.lower()
     if suffix not in EXTENSIONS:
@@ -340,6 +406,15 @@ async def upload(file: UploadFile, destination: Literal['instagram','youtube']='
     folder = c.DATA/'uploads'
     if destination=='youtube':
         folder /= media.YOUTUBE_SET_FOLDER
+        folder.mkdir(exist_ok=True)
+    elif batch:
+        # One upload action is one set, so the planner can mix it with earlier sets.
+        if not re.fullmatch(r'[a-z0-9]{8,32}',batch):
+            raise HTTPException(422,'Invalid upload set.')
+        label = ' '.join(batch_name.split())[:80] or 'Upload · '+media.local_day(time.time())
+        with connect(True) as db:
+            db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at) VALUES(?,?,?,?)',('upload:'+batch,label,mode,time.time()))
+        folder /= batch
         folder.mkdir(exist_ok=True)
     dest = folder/(secrets.token_hex(5)+'-'+name)
     temp = dest.with_suffix('.part')
@@ -470,6 +545,7 @@ class ClipEdit(BaseModel):
     caption: str = Field(default=None,max_length=2200,min_length=1)
     disabled: bool = None
     cover_manual_ms: int | None = Field(default=None,ge=0,strict=True)
+    song: str = Field(default=None,max_length=120)
 
 @app.patch('/api/clips/{clip_id}')
 def clip_edit(clip_id: str, body: ClipEdit):
@@ -478,6 +554,8 @@ def clip_edit(clip_id: str, body: ClipEdit):
         if not clip:
             raise HTTPException(404,'Clip not found.')
         values = body.model_dump(exclude_unset=True)
+        if 'song' in values and values['song'] is not None:
+            values['song'] = ' '.join(values['song'].split())
         if not values or any(v is None for k,v in values.items() if k!='cover_manual_ms'):
             raise HTTPException(422,'Supply an editable field.')
         if ('disabled' in values or 'cover_manual_ms' in values) and db.execute("SELECT 1 FROM jobs WHERE clip_id=? AND status IN ('processing','publishing')",(clip_id,)).fetchone():
@@ -504,16 +582,15 @@ class CaptionRewrite(BaseModel):
     model_config = ConfigDict(extra='forbid')
     instructions: str = Field(default='',max_length=4000)
 
-@app.post('/api/clips/{clip_id}/regenerate')
-def regenerate(clip_id: str, body: CaptionRewrite = None):
+def rewrite_clip(clip_id, instructions=''):
     with connect() as db:
         clip = db.execute('SELECT * FROM clips WHERE id=?',(clip_id,)).fetchone()
     if not clip or clip['media_version']==media.REBUILD_REQUESTED or clip['status'] in ('processing','error'):
         raise HTTPException(409,'Wait for footage processing to finish first.')
     s = settings()
-    if body and body.instructions.strip():
+    if instructions.strip():
         s['caption_instructions'] += ('\n\nFor this rewrite only, these directions take priority over the saved style guidance above:\n'
-                                      + body.instructions.strip())
+                                      + instructions.strip())
     try:
         caption,category = ai.generate(clip,s)
     except ai.CaptionError as exc:
@@ -524,8 +601,109 @@ def regenerate(clip_id: str, body: CaptionRewrite = None):
         db.execute("UPDATE jobs SET caption=?,caption_locked=0,container_id=NULL WHERE clip_id=? AND (caption_locked=0 OR caption=?) AND status IN ('queued','retry')",(caption,clip_id,clip['caption']))
         event('Caption regenerated for '+clip['name'],db=db)
     runtime('caption_retry_at',0)
-    plan()
-    return {'caption':caption}
+    try:
+        plan()
+    except Exception:
+        pass  # The caption is saved; the next worker pass replans.
+    return caption
+
+# Rewrites can outlast a reverse proxy's request timeout (Cloudflare stops at 100 s),
+# so slow ones finish in the background and the browser polls for the result.
+REWRITES = {}
+REWRITE_LOCK = threading.Lock()
+REWRITE_WAIT = 20
+
+def run_rewrite(token, clip_id, instructions):
+    try:
+        result = {'state':'done','caption':rewrite_clip(clip_id,instructions)}
+    except HTTPException as exc:
+        result = {'state':'error','status':exc.status_code,'message':exc.detail}
+    except Exception:
+        result = {'state':'error','status':500,'message':'Caption rewrite failed unexpectedly. Retry this clip; check the container logs if it keeps failing.'}
+    with REWRITE_LOCK:
+        REWRITES[token] = {**result,'at':time.time()}
+
+@app.post('/api/hashtags/suggest')
+def hashtag_suggestions():
+    try:
+        return {'hashtags':ai.suggest_hashtags(settings())}
+    except ai.CaptionError as exc:
+        raise HTTPException(502,str(exc))
+
+@app.post('/api/clips/{clip_id}/regenerate')
+def regenerate(clip_id: str, body: CaptionRewrite = None):
+    with connect() as db:
+        clip = db.execute('SELECT * FROM clips WHERE id=?',(clip_id,)).fetchone()
+    if not clip or clip['media_version']==media.REBUILD_REQUESTED or clip['status'] in ('processing','error'):
+        raise HTTPException(409,'Wait for footage processing to finish first.')
+    token = secrets.token_urlsafe(16)
+    with REWRITE_LOCK:
+        for key in [k for k,v in REWRITES.items() if v['at']<time.time()-3600]:
+            del REWRITES[key]
+        REWRITES[token] = {'state':'running','at':time.time()}
+    worker = threading.Thread(target=run_rewrite,args=(token,clip_id,body.instructions if body else ''),daemon=True)
+    worker.start()
+    worker.join(REWRITE_WAIT)
+    return rewrite_status(token)
+
+@app.get('/api/rewrites/{token}')
+def rewrite_status(token: str):
+    with REWRITE_LOCK:
+        result = REWRITES.get(token)
+    if not result:
+        raise HTTPException(404,'Reelflow restarted before this rewrite finished. Retry the clip.')
+    if result['state']=='error':
+        raise HTTPException(result['status'],result['message'])
+    if result['state']=='running':
+        return {'pending':True,'token':token}
+    return {'caption':result['caption']}
+
+def editable_clip(clip_id):
+    with connect() as db:
+        clip = db.execute('SELECT * FROM clips WHERE id=?',(clip_id,)).fetchone()
+    if not clip:
+        raise HTTPException(404,'Clip not found.')
+    if clip['media_version']!=media.MEDIA_VERSION or clip['status'] not in ('ready','captioning','needs_caption') or not (c.DATA/'media'/(clip_id+'.mp4')).is_file():
+        raise HTTPException(409,'Wait for this clip to finish preparing.')
+    return clip
+
+@app.get('/api/clips/{clip_id}/faces')
+def clip_faces(clip_id: str, t: float=0):
+    from . import edits
+    clip = editable_clip(clip_id)
+    try:
+        return {'faces':edits.detect_faces(c.DATA/'media'/(clip_id+'.mp4'),min(max(0,t),clip['duration']))}
+    except edits.EditError as exc:
+        raise HTTPException(422,str(exc))
+
+class EditRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    start: float = Field(ge=0)
+    box: dict[Literal['x','y','w','h'],float]
+    effects: list[Literal['arrow','circle','spotlight','zoom']] = Field(min_length=1,max_length=4)
+    label: str = Field(default='',max_length=40)
+    length: float = Field(default=5,ge=0,le=60)
+    replace: bool = True
+
+@app.post('/api/clips/{clip_id}/edits')
+def create_edit(clip_id: str, body: EditRequest):
+    from . import edits
+    clip = editable_clip(clip_id)
+    with connect() as db:
+        if db.execute("SELECT 1 FROM jobs WHERE clip_id=? AND status IN ('processing','publishing')",(clip_id,)).fetchone():
+            raise HTTPException(409,'This clip is being published. Wait for it to finish.')
+    try:
+        return {'id':edits.start(clip,body.model_dump(),body.replace)}
+    except edits.EditError as exc:
+        raise HTTPException(409 if 'Another edit' in str(exc) else 422,str(exc))
+
+@app.get('/api/edits/{edit_id}')
+def edit_status(edit_id: str):
+    with connect() as db:
+        row = db.execute('SELECT id,clip_id,status,progress,message,result_clip FROM edits WHERE id=?',(edit_id,)).fetchone()
+    if not row:
+        raise HTTPException(404,'Edit not found.')
+    return dict(row)
 
 @app.get('/api/preview/{clip_id}')
 def preview(clip_id: str, video: bool=False):

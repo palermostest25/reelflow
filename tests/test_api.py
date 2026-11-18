@@ -201,3 +201,50 @@ def test_one_off_caption_guidance_does_not_change_saved_guidance(client,monkeypa
     assert client.post(path,headers=h).status_code==200
     assert received[0].startswith('Use lowercase.') and received[0].endswith('Use title case this time.')
     assert received[1]=='Use lowercase.'
+
+
+def test_slow_rewrite_finishes_in_the_background_instead_of_timing_out(client,monkeypatch):
+    import threading
+    from app import ai, main
+    h=auth(client);cid=seed(1)[0]
+    release=threading.Event()
+    def slow(*args):
+        release.wait(5)
+        return 'Worth the wait.','DJ set'
+    monkeypatch.setattr(ai,'generate',slow)
+    monkeypatch.setattr(main,'REWRITE_WAIT',0.05)
+    first=client.post('/api/clips/'+cid+'/regenerate',headers=h)
+    assert first.status_code==200 and first.json()['pending'] is True
+    token=first.json()['token']
+    assert client.get('/api/rewrites/'+token).json()=={'pending':True,'token':token}
+    release.set()
+    for _ in range(100):
+        result=client.get('/api/rewrites/'+token).json()
+        if not result.get('pending'):break
+        time.sleep(.02)
+    assert result=={'caption':'Worth the wait.'}
+    assert client.get('/api/rewrites/unknown').status_code==404
+
+
+def test_rewrite_failures_return_readable_json(client,monkeypatch):
+    from app import ai
+    h=auth(client);cid=seed(1)[0]
+    def broken(*args):raise ai.CaptionError('Caption provider is rate limiting requests.')
+    monkeypatch.setattr(ai,'generate',broken)
+    r=client.post('/api/clips/'+cid+'/regenerate',headers=h)
+    assert r.status_code==502 and 'rate limiting' in r.json()['detail']
+    def crash(*args):raise RuntimeError('database is locked')
+    monkeypatch.setattr(ai,'generate',crash)
+    r=client.post('/api/clips/'+cid+'/regenerate',headers=h)
+    assert r.status_code==500 and 'Retry this clip' in r.json()['detail']
+
+
+def test_hashtag_settings_accept_a_favourites_pool(client):
+    h=auth(client)
+    tags=' '.join('#Tag%02d'%i for i in range(30))
+    assert client.patch('/api/settings',headers=h,json={'values':{'caption_hashtags':tags.replace(' #Tag05',', Tag05')+' #tag01'}}).status_code==200
+    assert client.get('/api/state').json()['settings']['caption_hashtags']==tags
+    assert client.patch('/api/settings',headers=h,json={'values':{'caption_hashtags':tags+' #More'}}).status_code==422
+    assert client.patch('/api/settings',headers=h,json={'values':{'caption_hashtags':'#bad-tag'}}).status_code==422
+    assert client.patch('/api/settings',headers=h,json={'values':{'hashtags_per_post':6}}).status_code==422
+    assert client.patch('/api/settings',headers=h,json={'values':{'hashtags_per_post':3}}).status_code==200

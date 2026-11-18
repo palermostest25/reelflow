@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS youtube_jobs (
  UNIQUE(kind,source_key)
 );
 CREATE INDEX IF NOT EXISTS youtube_due ON youtube_jobs(status,scheduled_at);
+CREATE TABLE IF NOT EXISTS song_matches (a TEXT NOT NULL, b TEXT NOT NULL, score REAL NOT NULL DEFAULT 0, found_at REAL, PRIMARY KEY(a,b));
+CREATE TABLE IF NOT EXISTS intake_batches (id TEXT PRIMARY KEY, name TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'mix' CHECK(mode IN ('mix','next')), created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS edits (
+ id TEXT PRIMARY KEY, clip_id TEXT NOT NULL, created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running',
+ progress REAL NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', result_clip TEXT
+);
 CREATE TABLE IF NOT EXISTS youtube_short_checks (clip_id TEXT PRIMARY KEY REFERENCES clips(id));
 '''
 
@@ -83,6 +89,13 @@ def init():
         for column in ('cover_auto_ms','cover_color_ms','cover_manual_ms'):
             if column not in clip_columns:
                 db.execute(f'ALTER TABLE clips ADD COLUMN {column} INTEGER')
+        for column,kind in (('audio_fp','BLOB'),('audio_state','INTEGER NOT NULL DEFAULT 0'),("song","TEXT NOT NULL DEFAULT ''"),
+                            ("batch","TEXT NOT NULL DEFAULT ''"),('edit_of','TEXT')):
+            if column not in clip_columns:
+                db.execute(f'ALTER TABLE clips ADD COLUMN {column} {kind}')
+        if 'batch' not in clip_columns:
+            from .media import assign_legacy_batches
+            assign_legacy_batches(db)
         if 'post_now_at' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN post_now_at REAL')
         if 'container_cover_ms' not in job_columns:
