@@ -186,6 +186,14 @@ def format_caption(caption, endings, tags):
         caption = caption+'\n\n'+' '.join(tags)
     return add_signoff(caption,endings)
 
+KIND_GUIDANCE = {
+    'talking': ('\nThis clip is someone talking to the camera. You cannot hear it, so take what is said only from the operator notes. '
+                'Never invent quotes or announcements; without notes, write a short caption that invites people to watch.'),
+    'bts': '\nThis is behind-the-scenes footage: keep it casual and candid rather than a performance hype caption.',
+    'promo': ('\nThis is a promo or announcement. Use only the dates, venues, ticket details and links given in the operator notes; '
+              'never invent them. Make the call to action clear.'),
+}
+
 def clean_tag(tag):
     tag = '#'+tag.strip().lstrip('#').strip()
     return tag if re.fullmatch(r'#\w{2,50}',tag) and not tag[1:].isdigit() else ''
@@ -295,6 +303,8 @@ def generate(clip, s):
         previous = db.execute("SELECT caption,reach,likes FROM history WHERE caption!='' ORDER BY timestamp DESC LIMIT 30").fetchall()
         own = db.execute("SELECT caption FROM jobs WHERE status IN ('queued','published') ORDER BY id DESC LIMIT 12").fetchall()
         library = db.execute("SELECT caption FROM clips WHERE caption!='' ORDER BY created_at DESC LIMIT 100").fetchall()
+        row = db.execute("SELECT COALESCE(NULLIF(c.kind,''),b.kind,'performance') FROM clips c LEFT JOIN intake_batches b ON b.id=c.batch WHERE c.id=?",(clip['id'],)).fetchone()
+    kind = row[0] if row else 'performance'
     examples = [{'caption':r['caption'][:1000], 'reach':r['reach'], 'likes':r['likes']} for r in previous]
     tag_count = max(0, min(MAX_TAGS, s['hashtags_per_post']))
     system = ('You write accurate Instagram captions in the account\'s existing voice. Return ONLY a JSON object '
@@ -335,7 +345,8 @@ def generate(clip, s):
         system += '\nDo not use hashtags.'
     used = {caption_key(r['caption'],endings) for r in [*previous,*own,*library]}
     openings = {words[:4] for words in used if len(words)>=6}
-    facts = {'brand':s['brand_name'],'context':s['business_context'],
+    system += KIND_GUIDANCE.get(kind,'')
+    facts = {'brand':s['brand_name'],'context':s['business_context'],'clip_type':c.KINDS.get(kind,kind),
              'operator_notes':clip['notes'],'previous_posts':examples,
              'recent_app_captions':[r['caption'] for r in own]}
     content = [{'type':'text','text':json.dumps(facts)}]

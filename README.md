@@ -14,6 +14,7 @@ Start with [Docker deployment](#run-it-one-container-one-compose-file), follow t
 - Writes one- or two-sentence captions from three silent video frames, account context, operator notes, and up to 30 previous captions with available engagement counts. OpenRouter OAuth PKCE or an OpenAI-compatible API key; choose an actual model from the live catalog.
 - Creates **one regular Reel and one Trial Reel per unique clip**. Regular Reels share to feed; Trials use `trial_params.graduation_strategy=MANUAL` and never silently fall back to regular Reels. No automatic Trial graduation.
 - Schedules up to five Trial Reels and one grid Reel daily by default. Both daily limits (0–10), the preview length (1–90 days), posting window and timing learning are editable in the UI. Conservation has its own editable cadence and daily counts; its defaults are one post per lane every second day. Normal cadence returns when sufficient new footage arrives.
+- Takes talking-to-camera, behind-the-scenes and promo clips alongside DJ footage, sprinkles them in at the spacing you choose, and posts any clip on a date you set or only within a date window.
 - Treats each upload or footage subfolder as a set and spreads sets through the queue, so one night never runs back to back. A set can instead be kept together and posted next.
 - Listens to every prepared clip with audio fingerprints (Chromaprint, via FFmpeg), finds clips that play the same song, and keeps them apart in both lanes. The library shows which clips match, with an audio-match percentage, and which have already been posted.
 - Picks five hashtags per post: favourites you list that fit the clip plus relevant ones the caption model finds, rotated so the same set doesn't repeat. **Suggest more** proposes new favourites.
@@ -82,6 +83,20 @@ Each upload is a set, and each subfolder of the watched footage folder is a set;
 Reelflow fingerprints the audio of every prepared clip (a few per worker pass) and links clips playing the same song: the same moment from two angles, or a repeated loop or drop. Matches show in the library as **Same song · N clips · %**. Around 100% means the same moment of the track; 60–80% usually means a repeated section. In the planner, a song is never repeated sooner than its share of the stock allows (up to five posts apart in each lane). If one song is more than half of what's left, it is alternated rather than saved for the end. Type a **Song name** on a clip to group clips yourself; giving a clip a different name splits it from a wrong audio match. Clips without audio, or shorter than about two seconds, are not matched.
 
 Use **Not posted yet**, **Already posted** and **Same song** in the Footage library to filter. Each clip's drawer lists its posting history with Instagram links and the clips it matches, with percentages.
+
+### Talking clips, extras and dates
+
+Not everything is DJ footage. Every set and clip has a type: **DJ / performance**, **Talking to camera**, **Behind the scenes** or **Promo / announcement**. Choose it when you upload, per set under **Footage library → Sets & mixing**, or per clip in its drawer; a clip follows its set unless you change it. Footage subfolders with names like `talking`, `BTS` or `promo` are typed automatically.
+
+**Settings → Content mix** controls the non-DJ types. **Post to** picks Grid and Trials, Grid only (the default for promos, which are for followers) or Trials only. **At most one every N posts** keeps them sprinkled between DJ clips in each lane, never back to back; 0 removes the gap. The caption model is told the clip type. It can't hear talking clips, so put what's said in **Facts & context**; promos only use dates, venues and ticket details from your notes.
+
+Open any clip and use **Type & timing → When should it post?**:
+
+- **Whenever it fits:** mixed into the queue as usual.
+- **On a specific date:** posts that day, at your chosen time or the day's best slot if you leave the time blank. Other posts work around it. Daily limits still apply, so a day already full of posted Reels can hold it.
+- **Between two dates:** never scheduled before the first date or after the second. Once the window ends, unposted copies stay unscheduled and say why.
+
+Use the **Dated & windows** and **Talking & extras** filters to review them. The schedule marks these posts **Talking**, **Behind the scenes**, **Promo** and **Dated**.
 
 ### Funny edits
 

@@ -90,12 +90,16 @@ def init():
             if column not in clip_columns:
                 db.execute(f'ALTER TABLE clips ADD COLUMN {column} INTEGER')
         for column,kind in (('audio_fp','BLOB'),('audio_state','INTEGER NOT NULL DEFAULT 0'),("song","TEXT NOT NULL DEFAULT ''"),
-                            ("batch","TEXT NOT NULL DEFAULT ''"),('edit_of','TEXT')):
+                            ("batch","TEXT NOT NULL DEFAULT ''"),('edit_of','TEXT'),("kind","TEXT NOT NULL DEFAULT ''"),
+                            ("post_on","TEXT NOT NULL DEFAULT ''"),("post_at","TEXT NOT NULL DEFAULT ''"),
+                            ("not_before","TEXT NOT NULL DEFAULT ''"),("not_after","TEXT NOT NULL DEFAULT ''")):
             if column not in clip_columns:
                 db.execute(f'ALTER TABLE clips ADD COLUMN {column} {kind}')
         if 'batch' not in clip_columns:
             from .media import assign_legacy_batches
             assign_legacy_batches(db)
+        if 'kind' not in {row['name'] for row in db.execute('PRAGMA table_info(intake_batches)')}:
+            db.execute("ALTER TABLE intake_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'performance'")
         if 'post_now_at' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN post_now_at REAL')
         if 'container_cover_ms' not in job_columns:

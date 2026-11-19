@@ -187,6 +187,15 @@ def batch_for(path, now, day=None, db=None):
         return 'folder:'+folder, folder
     return 'folder:'+day, 'Footage folder · '+day
 
+def guess_kind(name):
+    """A footage subfolder called 'talking', 'BTS' or 'promo' sets its clips' type."""
+    words = name.casefold()
+    for kind, hints in (('talking',('talk','camera','vlog','interview','speak')),('bts',('bts','behind','backstage')),
+                        ('promo',('promo','announce','ticket','flyer'))):
+        if any(h in words for h in hints):
+            return kind
+    return 'performance'
+
 def assign_legacy_batches(db):
     # Earlier installs had no sets; group their clips the same way new intake does.
     for clip in db.execute("SELECT id,source,created_at FROM clips WHERE batch=''").fetchall():
@@ -216,7 +225,8 @@ def scan(now=None):
                 if existing:
                     continue
                 batch, batch_name = batch_for(path, now, db=db)
-                db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at) VALUES(?,?,?,?)',(batch,batch_name,'mix',now))
+                db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at,kind) VALUES(?,?,?,?,?)',
+                           (batch,batch_name,'mix',now,guess_kind(batch_name) if batch.startswith('folder:') else 'performance'))
                 db.execute('INSERT INTO clips(id,name,source,created_at,batch) VALUES(?,?,?,?,?)',(clip_id,path.name,str(path),now,batch))
             imported += 1
             event('New footage found: '+path.name)

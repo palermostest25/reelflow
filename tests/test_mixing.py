@@ -161,3 +161,105 @@ def test_folder_subdirectories_are_sets():
     assert media.batch_for(c.FOOTAGE/'Mojo 14 Nov'/'a.mp4',NOW)==('folder:Mojo 14 Nov','Mojo 14 Nov')
     assert media.batch_for(c.FOOTAGE/'a.mp4',NOW)[0].startswith('folder:')
     assert media.batch_for(c.DATA/'uploads'/'abc'/'a.mp4',NOW)[0]=='upload:abc'
+
+
+def kinds_in_order(lane, ids_by_kind):
+    lookup = {cid:kind for kind,ids in ids_by_kind.items() for cid in ids}
+    return [lookup[cid] for cid in lane_order(lane)]
+
+def test_talking_clips_are_sprinkled_in_with_their_gap():
+    dj = add_clips('upload:dj',14)
+    talk = add_clips('upload:talk',4)
+    with connect(True) as db:
+        db.execute("UPDATE intake_batches SET kind='talking' WHERE id='upload:talk'")
+    set_settings(conserve=False,min_gap_days=0,trials_per_day=3,content_mix={'talking':{'lanes':'both','every':3},'bts':{'lanes':'both','every':3},'promo':{'lanes':'main','every':4}})
+    plan(NOW)
+    for lane in ('main','trial'):
+        order = kinds_in_order(lane,{'dj':dj,'talk':talk})
+        spots = [i for i,k in enumerate(order) if k=='talk']
+        assert len(spots)==4 and all(b-a>=3 for a,b in zip(spots,spots[1:])), order
+        assert spots[0] < 9  # Sprinkled through, not dumped at the end.
+
+def test_promo_goes_to_the_grid_only_and_lane_changes_follow_settings():
+    add_clips('upload:dj',4)
+    promo = add_clips('upload:promo',2)
+    with connect(True) as db:
+        db.execute("UPDATE intake_batches SET kind='promo' WHERE id='upload:promo'")
+    set_settings(conserve=False,min_gap_days=0)
+    plan(NOW)
+    with connect() as db:
+        lanes = lambda cid:{r[0] for r in db.execute('SELECT lane FROM jobs WHERE clip_id=?',(cid,))}
+        assert lanes(promo[0])=={'main'}
+    set_settings(content_mix={'talking':{'lanes':'both','every':3},'bts':{'lanes':'both','every':3},'promo':{'lanes':'both','every':4}})
+    plan(NOW)
+    with connect() as db:
+        assert {r[0] for r in db.execute('SELECT lane FROM jobs WHERE clip_id=?',(promo[0],))}=={'main','trial'}
+        db.execute("UPDATE jobs SET caption_locked=1,caption='Hand edited' WHERE clip_id=? AND lane='trial'",(promo[1],))
+        db.commit()
+    set_settings(content_mix={'talking':{'lanes':'both','every':3},'bts':{'lanes':'both','every':3},'promo':{'lanes':'main','every':4}})
+    plan(NOW)
+    with connect() as db:
+        assert {r[0] for r in db.execute('SELECT lane FROM jobs WHERE clip_id=?',(promo[0],))}=={'main'}
+        # An edited post is never thrown away, but it is no longer scheduled.
+        kept = db.execute("SELECT scheduled_at FROM jobs WHERE clip_id=? AND lane='trial'",(promo[1],)).fetchone()
+        assert kept is not None and kept[0] is None
+
+def test_a_dated_clip_posts_on_its_day_and_time():
+    dj = add_clips('upload:dj',10)
+    gig = add_clips('upload:gig',1)[0]
+    with connect(True) as db:
+        db.execute("UPDATE clips SET post_on='2026-10-24',post_at='19:30' WHERE id=?",(gig,))
+    set_settings(conserve=False,min_gap_days=0)
+    plan(NOW)
+    tz = ZoneInfo('Australia/Perth')
+    with connect() as db:
+        rows = db.execute('SELECT lane,scheduled_at,reason FROM jobs WHERE clip_id=?',(gig,)).fetchall()
+        main_that_day = [r[0] for r in db.execute("SELECT scheduled_at FROM jobs WHERE lane='main' AND scheduled_at IS NOT NULL")
+                         if datetime.fromtimestamp(r[0],tz).date().isoformat()=='2026-10-24']
+    for lane,ts,reason in rows:
+        assert datetime.fromtimestamp(ts,tz).strftime('%Y-%m-%d %H:%M')=='2026-10-24 19:30' and reason.startswith('Dated')
+    assert len(main_that_day)==1  # The dated post takes the day's single grid slot.
+
+def test_posting_windows_hold_clips_until_they_open_and_explain_when_they_close():
+    add_clips('upload:dj',10)
+    later, expired = add_clips('upload:promo',2)
+    with connect(True) as db:
+        db.execute("UPDATE clips SET not_before='2026-10-27' WHERE id=?",(later,))
+        db.execute("UPDATE clips SET not_after='2026-10-19' WHERE id=?",(expired,))
+    set_settings(conserve=False,min_gap_days=0)
+    plan(NOW)
+    tz = ZoneInfo('Australia/Perth')
+    with connect() as db:
+        for ts, in db.execute('SELECT scheduled_at FROM jobs WHERE clip_id=?',(later,)):
+            assert ts and datetime.fromtimestamp(ts,tz).date().isoformat()>='2026-10-27'
+        for ts,reason in db.execute('SELECT scheduled_at,reason FROM jobs WHERE clip_id=?',(expired,)):
+            assert ts is None and 'window ended' in reason
+
+def test_timing_and_type_validation():
+    cid = add_clips('upload:x',1)[0]
+    with TestClient(app) as client:
+        h = login(client)
+        patch = lambda body:client.patch('/api/clips/'+cid,headers=h,json=body)
+        assert patch({'post_on':'2020-01-01'}).status_code==422
+        assert patch({'post_on':'2099-12-24','post_at':'25:00'}).status_code==422
+        assert patch({'post_at':'19:00'}).status_code==422
+        assert patch({'not_before':'2099-12-10','not_after':'2099-12-01'}).status_code==422
+        assert patch({'kind':'karaoke'}).status_code==422
+        assert patch({'post_on':'2099-12-24','post_at':'19:00','kind':'promo'}).status_code==200
+        row = client.get('/api/clips?only='+cid).json()[0]
+        assert (row['kind'],row['own_kind'],row['set_kind'],row['post_on'])==('promo','promo','performance','2099-12-24')
+        assert {r['id'] for r in client.get('/api/clips?view=dated').json()}=={cid}
+        assert {r['id'] for r in client.get('/api/clips?view=other').json()}=={cid}
+        assert patch({'kind':'','post_on':'','post_at':''}).status_code==200
+        assert client.get('/api/clips?only='+cid).json()[0]['kind']=='performance'
+        assert client.patch('/api/batches/upload:x',headers=h,json={'kind':'talking'}).status_code==200
+        assert client.get('/api/clips?only='+cid).json()[0]['kind']=='talking'
+        bad = {'talking':{'lanes':'everywhere','every':3},'bts':{'lanes':'both','every':3},'promo':{'lanes':'main','every':4}}
+        assert client.patch('/api/settings',headers=h,json={'values':{'content_mix':bad}}).status_code==422
+        assert client.patch('/api/settings',headers=h,json={'values':{'content_mix':{'talking':{'lanes':'main','every':5}}}}).status_code==200
+        mix = client.get('/api/state').json()['settings']['content_mix']
+        assert mix['talking']=={'lanes':'main','every':5} and mix['promo']['lanes']=='main'
+
+def test_folder_names_suggest_clip_types():
+    from app.media import guess_kind
+    assert [guess_kind(n) for n in ('Talking to camera','BTS Mojo','Promo NYE','Mojo 14 Nov')]==['talking','bts','promo','performance']

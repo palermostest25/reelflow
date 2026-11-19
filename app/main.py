@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.sessions import SessionMiddleware
 from . import config as c
 from .db import init, connect, settings, secret, event, runtime
-from .planner import plan, conservation, daily_limit, runway_days
+from .planner import plan, conservation, daily_limit, runway_days, KIND_SQL
 from .security import verify_media
 from . import instagram as ig, ai, media, songs, notifications as ntfy
 from .worker import tick, send_post_now
@@ -164,8 +164,8 @@ def schedule(days: int = None):
     start = datetime.fromtimestamp(now,tz).replace(hour=0,minute=0,second=0,microsecond=0)
     end = start + timedelta(days=days)
     with connect() as db:
-        rows = [dict(r) for r in db.execute("""SELECT j.*,c.name,c.duration,c.category,c.disabled
-            FROM jobs j JOIN clips c ON c.id=j.clip_id
+        rows = [dict(r) for r in db.execute("""SELECT j.*,c.name,c.duration,c.category,c.disabled,c.post_on,"""+KIND_SQL+""" AS kind
+            FROM jobs j JOIN clips c ON c.id=j.clip_id LEFT JOIN intake_batches b ON b.id=c.batch
             WHERE j.status!='rejected' AND c.disabled=0
             AND COALESCE(j.published_at,j.scheduled_at)>=? AND COALESCE(j.published_at,j.scheduled_at)<?
             ORDER BY COALESCE(j.published_at,j.scheduled_at),j.id""",(start.timestamp(),end.timestamp()))]
@@ -195,15 +195,17 @@ def jobs(status: str='upcoming', lane: str='', offset: int=0, limit: int=100):
     if status not in filters:
         raise HTTPException(422,'Invalid status.')
     with connect() as db:
-        return [dict(r) for r in db.execute('SELECT j.*,c.name,c.duration,c.category,c.disabled FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE '+filters[status]+(' AND j.lane=?' if lane else '')+' ORDER BY COALESCE(j.scheduled_at,99999999999),j.id LIMIT ? OFFSET ?',((lane,) if lane else ())+(limit,offset))]
+        return [dict(r) for r in db.execute('SELECT j.*,c.name,c.duration,c.category,c.disabled,c.post_on,'+KIND_SQL+' AS kind FROM jobs j JOIN clips c ON c.id=j.clip_id LEFT JOIN intake_batches b ON b.id=c.batch WHERE '+filters[status]+(' AND j.lane=?' if lane else '')+' ORDER BY COALESCE(j.scheduled_at,99999999999),j.id LIMIT ? OFFSET ?',((lane,) if lane else ())+(limit,offset))]
 
 @app.get('/api/clips')
-def clips(offset: int=0, limit: int=100, view: Literal['all','unposted','posted','same_song']='all', only: str=''):
+def clips(offset: int=0, limit: int=100, view: Literal['all','unposted','posted','same_song','dated','other']='all', only: str=''):
     if offset<0 or not 1<=limit<=200:
         raise HTTPException(422,'Invalid page.')
     filters = {'all':'1=1',
         'posted':"EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status='published')",
-        'unposted':"NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status='published')"}
+        'unposted':"NOT EXISTS (SELECT 1 FROM jobs j WHERE j.clip_id=c.id AND j.status='published')",
+        'dated':"(c.post_on!='' OR c.not_before!='' OR c.not_after!='')",
+        'other':KIND_SQL+"!='performance'"}
     with connect() as db:
         groups = songs.groups(db)
         sizes = {}
@@ -220,6 +222,7 @@ def clips(offset: int=0, limit: int=100, view: Literal['all','unposted','posted'
             params = ()
         rows = [dict(r) for r in db.execute("""SELECT c.id,c.name,c.created_at,c.duration,c.status,c.error,c.notes,c.caption,c.caption_source,c.category,c.disabled,
             c.cover_manual_ms,c.cover_auto_ms,c.cover_color_ms,c.song,c.audio_state,c.batch,c.edit_of,b.name AS batch_name,b.mode AS batch_mode,
+            c.kind AS own_kind,COALESCE(b.kind,'performance') AS set_kind,"""+KIND_SQL+""" AS kind,c.post_on,c.post_at,c.not_before,c.not_after,
             (c.media_version=? AND c.status!='error') AS rebuilding FROM clips c LEFT JOIN intake_batches b ON b.id=c.batch
             WHERE """+where+""" ORDER BY c.created_at DESC,c.id LIMIT ? OFFSET ?""",(media.REBUILD_REQUESTED,*params,limit,offset))]
         ids = [r['id'] for r in rows]
@@ -248,12 +251,13 @@ class BatchEdit(BaseModel):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(default=None,min_length=1,max_length=80)
     mode: Literal['mix','next'] = None
+    kind: Literal['performance','talking','bts','promo'] = None
 
 @app.patch('/api/batches/{batch_id:path}')
 def batch_edit(batch_id: str, body: BatchEdit):
     values = {k:(v.strip() if isinstance(v,str) else v) for k,v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not values or values.get('name')=='':
-        raise HTTPException(422,'Supply a set name or posting order.')
+        raise HTTPException(422,'Supply a set name, type or posting order.')
     with connect(True) as db:
         if db.execute('UPDATE intake_batches SET '+','.join(k+'=?' for k in values)+' WHERE id=?',(*values.values(),batch_id)).rowcount!=1:
             raise HTTPException(404,'Set not found.')
@@ -325,6 +329,15 @@ def update_settings(body: SettingsPatch):
     if not 0<=s['hashtags_per_post']<=ai.MAX_TAGS:
         raise HTTPException(422,'Instagram allows up to five hashtags per post. Choose 0 to 5.')
     s['caption_hashtags'] = ' '.join(tags)
+    mix = {}
+    for kind in ('talking','bts','promo'):
+        rule = {**c.DEFAULTS['content_mix'][kind], **(s['content_mix'].get(kind) or {})}
+        if rule.get('lanes') not in ('both','main','trial') or type(rule.get('every')) is not int or not 0<=rule['every']<=30 or set(rule)-{'lanes','every'}:
+            raise HTTPException(422,'Choose where each clip type posts and a gap of 0–30 posts.')
+        mix[kind] = rule
+    if set(s['content_mix'])-set(mix):
+        raise HTTPException(422,'Unknown clip type.')
+    s['content_mix'] = mix
     try:
         ZoneInfo(s['timezone'])
         if s['drought_until']:
@@ -397,7 +410,7 @@ def notification_test(background: BackgroundTasks):
     return {'ok':True,'message':'Test notification queued. Delivery appears in Activity.'}
 
 @app.post('/api/upload')
-async def upload(file: UploadFile, destination: Literal['instagram','youtube']='instagram', batch: str='', batch_name: str='', mode: Literal['mix','next']='mix'):
+async def upload(file: UploadFile, destination: Literal['instagram','youtube']='instagram', batch: str='', batch_name: str='', mode: Literal['mix','next']='mix', kind: Literal['performance','talking','bts','promo']='performance'):
     from .media import EXTENSIONS
     suffix = Path(file.filename or '').suffix.lower()
     if suffix not in EXTENSIONS:
@@ -413,7 +426,7 @@ async def upload(file: UploadFile, destination: Literal['instagram','youtube']='
             raise HTTPException(422,'Invalid upload set.')
         label = ' '.join(batch_name.split())[:80] or 'Upload · '+media.local_day(time.time())
         with connect(True) as db:
-            db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at) VALUES(?,?,?,?)',('upload:'+batch,label,mode,time.time()))
+            db.execute('INSERT OR IGNORE INTO intake_batches(id,name,mode,created_at,kind) VALUES(?,?,?,?,?)',('upload:'+batch,label,mode,time.time(),kind))
         folder /= batch
         folder.mkdir(exist_ok=True)
     dest = folder/(secrets.token_hex(5)+'-'+name)
@@ -546,6 +559,31 @@ class ClipEdit(BaseModel):
     disabled: bool = None
     cover_manual_ms: int | None = Field(default=None,ge=0,strict=True)
     song: str = Field(default=None,max_length=120)
+    kind: Literal['','performance','talking','bts','promo'] = None
+    post_on: str = Field(default=None,max_length=10)
+    post_at: str = Field(default=None,max_length=5)
+    not_before: str = Field(default=None,max_length=10)
+    not_after: str = Field(default=None,max_length=10)
+
+def check_timing(values, clip):
+    """Dates are the account's local calendar days. A dated clip ignores the window."""
+    today = datetime.now(ZoneInfo(settings()['timezone'])).date()
+    merged = {k:values.get(k,clip[k]) for k in ('post_on','post_at','not_before','not_after')}
+    parsed = {}
+    for key in ('post_on','not_before','not_after'):
+        if merged[key]:
+            try:
+                parsed[key] = datetime.strptime(merged[key],'%Y-%m-%d').date()
+            except ValueError:
+                raise HTTPException(422,'Use dates like 2026-12-24.')
+    if merged['post_at'] and not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d',merged['post_at']):
+        raise HTTPException(422,'Use a 24-hour time like 19:30.')
+    if 'post_on' in values and values['post_on'] and parsed['post_on'] < today:
+        raise HTTPException(422,'Choose today or a later date.')
+    if merged['post_at'] and not merged['post_on']:
+        raise HTTPException(422,'Choose a date for the posting time.')
+    if parsed.get('not_before') and parsed.get('not_after') and parsed['not_after'] < parsed['not_before']:
+        raise HTTPException(422,'The window must end on or after the day it starts.')
 
 @app.patch('/api/clips/{clip_id}')
 def clip_edit(clip_id: str, body: ClipEdit):
@@ -554,6 +592,8 @@ def clip_edit(clip_id: str, body: ClipEdit):
         if not clip:
             raise HTTPException(404,'Clip not found.')
         values = body.model_dump(exclude_unset=True)
+        if any(k in values for k in ('post_on','post_at','not_before','not_after')):
+            check_timing({k:v for k,v in values.items() if v is not None},clip)
         if 'song' in values and values['song'] is not None:
             values['song'] = ' '.join(values['song'].split())
         if not values or any(v is None for k,v in values.items() if k!='cover_manual_ms'):

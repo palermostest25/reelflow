@@ -3,8 +3,9 @@ import hashlib
 import math
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from . import config as c
 from .db import connect, settings, event
 from .songs import groups as song_groups
 
@@ -99,10 +100,11 @@ def running_order(pending, meta, seed, lane):
             position[j['id']] = (i+offset)/len(members)
     return position
 
-def candidates(pending, position, meta, recent_songs, last):
+def candidates(pending, position, meta, recent_songs, last, recent_kinds=(), spacing=None):
     """Clips to try for the next slot, best first.
 
-    1. Never repeat a song sooner than its share of the stock allows (up to five posts apart).
+    1. Never repeat a song sooner than its share of the stock allows (up to five posts apart),
+       and keep talking, behind-the-scenes and promo clips at least their configured gap apart.
     2. A song holding half of what is left goes whenever it may, or it would bunch up at the end.
     3. Near the front of the mix, prefer a different set, then a different scene.
     """
@@ -115,13 +117,15 @@ def candidates(pending, position, meta, recent_songs, last):
         remaining[song] = remaining.get(song,0)+1
     total = len(ordered)
     last_seen = {song:len(recent_songs)-i for i,song in enumerate(recent_songs)}
+    kind_seen = {kind:len(recent_kinds)-i for i,kind in enumerate(recent_kinds)}
+    spacing = spacing or {}
     sets = {meta[j['clip_id']]['batch'] for j in ordered}
     front = {j['id'] for j in ordered[:LOOKAHEAD]}
     def key(j):
         m = meta[j['clip_id']]
         count = remaining[m['song']]
         need = min(SONG_MEMORY+1, max(2, total//count)) if len(remaining)>1 else 0
-        too_soon = last_seen.get(m['song'],10**6) < need
+        too_soon = last_seen.get(m['song'],10**6) < need or kind_seen.get(m['kind'],10**6) < spacing.get(m['kind'],0)
         dominant = count*2 >= total+1
         if j['id'] in front:
             local = (0, len(sets)>1 and m['batch']==last.get('batch'),
@@ -131,19 +135,47 @@ def candidates(pending, position, meta, recent_songs, last):
         return (too_soon, not dominant, local)
     return sorted(ordered,key=key)
 
+KIND_SQL = "COALESCE(NULLIF(c.kind,''),b.kind,'performance')"
+
+def mix_for(s, kind):
+    """(lanes, every) for a content type. DJ footage goes everywhere with no extra gap."""
+    if kind == 'performance':
+        return ('main','trial'), 0
+    rule = {**c.DEFAULTS['content_mix'].get(kind,{'lanes':'both','every':3}), **(s.get('content_mix') or {}).get(kind,{})}
+    lanes = {'both':('main','trial'),'main':('main',),'trial':('trial',)}.get(rule['lanes'],('main','trial'))
+    return lanes, int(rule['every'])
+
+def day_or_none(text):
+    try:
+        return date.fromisoformat(text) if text else None
+    except ValueError:
+        return None
+
 def clip_meta(db):
     songs = song_groups(db)
-    rows = db.execute('SELECT c.id,c.name,c.batch,COALESCE(b.mode,\'mix\') mode,COALESCE(b.created_at,c.created_at) batch_at FROM clips c LEFT JOIN intake_batches b ON b.id=c.batch').fetchall()
-    return {r['id']:{'name':r['name'],'batch':r['batch'] or 'set:'+r['id'],'mode':r['mode'],'batch_at':r['batch_at'],'song':songs.get(r['id'],r['id'])} for r in rows}
+    rows = db.execute('SELECT c.id,c.name,c.batch,COALESCE(b.mode,\'mix\') mode,COALESCE(b.created_at,c.created_at) batch_at,'
+                      +KIND_SQL+' kind,c.post_on,c.post_at,c.not_before,c.not_after FROM clips c LEFT JOIN intake_batches b ON b.id=c.batch').fetchall()
+    return {r['id']:{'name':r['name'],'batch':r['batch'] or 'set:'+r['id'],'mode':r['mode'],'batch_at':r['batch_at'],
+                     'song':songs.get(r['id'],r['id']),'kind':r['kind'],'post_on':day_or_none(r['post_on']),'post_at':r['post_at'],
+                     'not_before':day_or_none(r['not_before']),'not_after':day_or_none(r['not_after'])} for r in rows}
+
+def in_window(m, day):
+    return not ((m['not_before'] and day < m['not_before']) or (m['not_after'] and day > m['not_after']))
 
 def plan(now=None):
     now = now or time.time()
     with connect(True) as db:
         s = settings(db)
         tz = ZoneInfo(s['timezone'])
+        meta = clip_meta(db)
         for r in db.execute('SELECT id,caption FROM clips WHERE status=\'ready\' AND disabled=0').fetchall():
-            for lane in ('main', 'trial'):
+            lanes, _ = mix_for(s, meta[r['id']]['kind'])
+            for lane in lanes:
                 db.execute('INSERT OR IGNORE INTO jobs(clip_id,lane,caption,approved) VALUES(?,?,?,?)', (r['id'], lane, r['caption'], int(not s['require_approval'])))
+            for lane in {'main','trial'}-set(lanes):
+                # This type no longer goes to this destination: drop untouched, never-attempted posts there.
+                db.execute("""DELETE FROM jobs WHERE clip_id=? AND lane=? AND status IN ('queued','retry') AND pinned=0 AND caption_locked=0
+                    AND attempts=0 AND container_id IS NULL AND post_now_at IS NULL""",(r['id'],lane))
         jobs = db.execute("SELECT j.*,c.created_at,c.category FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry') AND c.disabled=0 AND c.status='ready'").fetchall()
         main_count = sum(j['lane'] == 'main' for j in jobs)
         trial_count = sum(j['lane'] == 'trial' for j in jobs)
@@ -151,26 +183,48 @@ def plan(now=None):
         interval = conservation(s, stock_count, now)
         run_day = datetime.fromtimestamp(now, tz).date()
         seed = run_day.isoformat()
-        meta = clip_meta(db)
+        spacing = {kind:mix_for(s,kind)[1] for kind in c.KINDS}
         # Recompute all flexible jobs so a new intake batch is mingled, never just appended.
         for lane in ('main', 'trial'):
             protected = {j['id'] for j in jobs if j['post_now_at'] or (j['scheduled_at'] and now-1800 <= j['scheduled_at'] <= now+1800)}
             pending = [j for j in jobs if j['lane'] == lane and not j['pinned'] and j['id'] not in protected]
             for j in pending:
                 db.execute('UPDATE jobs SET scheduled_at=NULL WHERE id=?',(j['id'],))
+            # Dated clips take their day first; everything else fills in around them.
+            dated = [j for j in pending if meta[j['clip_id']]['post_on'] and lane in mix_for(s,meta[j['clip_id']]['kind'])[0]]
+            dated_ids = {j['id'] for j in dated}
+            pending = [j for j in pending if j['id'] not in dated_ids and lane in mix_for(s,meta[j['clip_id']]['kind'])[0]]
+            dated_at = []
+            by_day = {}
+            for j in sorted(dated,key=lambda j:(meta[j['clip_id']]['post_at'] or '99',meta[j['clip_id']]['name'])):
+                by_day.setdefault(meta[j['clip_id']]['post_on'],[]).append(j)
+            for when,group in by_day.items():
+                day = datetime.combine(when, datetime.min.time(), tz)
+                slots = hours_for(db, s, day, lane, max(len(group), daily_limit(s, lane) or 1))[0] or [s['schedule_hours'][when.weekday()]]
+                free = iter(sorted(slots))
+                for j in group:
+                    at = meta[j['clip_id']]['post_at']
+                    if at:
+                        ts = day.replace(hour=int(at[:2]),minute=int(at[3:5])).timestamp()
+                    else:
+                        hour = next(free, slots[-1])
+                        ts = day.replace(hour=int(hour), minute=round(hour%1*60)).timestamp()
+                    db.execute('UPDATE jobs SET scheduled_at=?,reason=? WHERE id=?',(ts,'Dated · you chose '+when.strftime('%-d %b')+(' at '+at if at else ''),j['id']))
+                    dated_at.append(ts)
             cap = daily_limit(s, lane, interval)
             if not cap:
                 continue
             # Post now is extra to the scheduled cadence, so its slot can be filled again.
             fixed = db.execute("SELECT clip_id,scheduled_at,published_at FROM jobs WHERE lane=? AND ((status='published' AND post_now_at IS NULL) OR (pinned=1 AND status IN ('queued','retry')) OR status IN ('processing','publishing','uncertain'))", (lane,)).fetchall()
             fixed = list(fixed) + [j for j in jobs if j['lane']==lane and j['id'] in protected and not j['pinned']]
-            occupied = [r['published_at'] or r['scheduled_at'] for r in fixed if r['published_at'] or r['scheduled_at']]
+            occupied = [r['published_at'] or r['scheduled_at'] for r in fixed if r['published_at'] or r['scheduled_at']] + dated_at
             position = running_order(pending, meta, seed, lane)
             history = db.execute("""SELECT clip_id FROM jobs WHERE lane=? AND COALESCE(published_at,scheduled_at)<=?
                 AND (status IN ('published','processing','publishing','uncertain') OR id IN (%s))
                 ORDER BY COALESCE(published_at,scheduled_at) DESC LIMIT ?""" % ','.join('?'*len(protected)),
                 (lane,now+1800,*protected,SONG_MEMORY)).fetchall()
             recent_songs = [meta[r['clip_id']]['song'] for r in reversed(history) if r['clip_id'] in meta]
+            recent_kinds = [meta[r['clip_id']]['kind'] for r in reversed(history) if r['clip_id'] in meta]
             last = {'batch':meta[history[0]['clip_id']]['batch'] if history and history[0]['clip_id'] in meta else None,'category':None}
             for offset in range(366):
                 if not pending:
@@ -189,7 +243,7 @@ def plan(now=None):
                         continue
                     if any(abs(ts-x) < 5400 for x in occupied):
                         continue
-                    for j in candidates(pending, position, meta, recent_songs, last):
+                    for j in candidates([j for j in pending if in_window(meta[j['clip_id']], day.date())], position, meta, recent_songs, last, recent_kinds, spacing):
                         other = db.execute("SELECT scheduled_at,published_at FROM jobs WHERE clip_id=? AND lane!=? AND status NOT IN ('rejected','failed')", (j['clip_id'], lane)).fetchone()
                         other_at = (other['published_at'] or other['scheduled_at']) if other else None
                         other_enabled = daily_limit(s,'trial' if lane=='main' else 'main')
@@ -201,7 +255,14 @@ def plan(now=None):
                     db.execute('UPDATE jobs SET scheduled_at=?,reason=? WHERE id=?', (ts, ('Footage conservation · every %s days. ' % interval if interval > 1 else '') + reason, j['id']))
                     occupied.append(ts)
                     recent_songs.append(meta[j['clip_id']]['song'])
+                    recent_kinds.append(meta[j['clip_id']]['kind'])
                     last = {'batch':meta[j['clip_id']]['batch'],'category':j['category']}
                     pending.remove(j)
+            for j in pending:
+                m = meta[j['clip_id']]
+                if m['not_after'] and m['not_after'] < run_day:
+                    db.execute('UPDATE jobs SET reason=? WHERE id=?',('Its posting window ended '+m['not_after'].strftime('%-d %b')+'. Change the dates or exclude the clip.',j['id']))
+                elif m['not_before'] or m['not_after']:
+                    db.execute('UPDATE jobs SET reason=? WHERE id=?',('Waiting for a free slot in its posting window.',j['id']))
         return {'interval': interval, 'main_remaining': main_count, 'stock_remaining': stock_count,
                 'runway_days': runway_days(s, main_count, trial_count, interval), 'drought_target_days': max(0, (datetime.fromisoformat(s['drought_until']).date() - datetime.fromtimestamp(now,tz).date()).days) if s['drought_until'] else 0}

@@ -243,3 +243,18 @@ def test_hashtag_suggestions_skip_favourites_generic_and_invalid_tags(monkeypatc
     reply={'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'hashtags':['#perthdjs','#fyp','#Deep House','TechHouse','#WAClubs','#123']})}}]}
     install_transport(monkeypatch,lambda r:httpx.Response(200,json=reply))
     assert ai.suggest_hashtags(s)==['#TechHouse','#WAClubs']
+
+
+def test_talking_clips_tell_the_model_to_use_notes_not_invented_quotes(monkeypatch):
+    clip,s=clip_and_settings(monkeypatch)
+    with connect(True) as db:
+        db.execute("UPDATE clips SET kind='talking' WHERE id=?",(clip['id'],))
+    monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
+    seen=[]
+    def provider(request):
+        body=json.loads(request.content);seen.append(body)
+        return httpx.Response(200,json=completion())
+    install_transport(monkeypatch,provider)
+    ai.generate(clip,s)
+    assert 'talking to the camera' in seen[0]['messages'][0]['content']
+    assert json.loads(seen[0]['messages'][1]['content'][0]['text'])['clip_type']=='Talking to camera'

@@ -34,7 +34,12 @@ DEFAULTS = {
     'ntfy_topic': '', 'ai_model': AI_MODEL, 'ai_vision': True,
     'require_approval': False, 'min_gap_days': 1,
     'schedule_hours': [18, 18, 18, 18, 18, 18, 18],
+    # Non-performance clips are sprinkled in: which destinations, and at most one every N posts.
+    'content_mix': {'talking': {'lanes': 'both', 'every': 3}, 'bts': {'lanes': 'both', 'every': 3},
+                    'promo': {'lanes': 'main', 'every': 4}},
 }
+
+KINDS = {'performance': 'DJ / performance', 'talking': 'Talking to camera', 'bts': 'Behind the scenes', 'promo': 'Promo / announcement'}
 
 def bootstrap_runtime():
     global SECRET, TOKEN_KEY, PASSWORD
