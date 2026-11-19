@@ -105,6 +105,13 @@ def init():
         if 'container_cover_ms' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN container_cover_ms INTEGER')
         db.execute('INSERT OR IGNORE INTO settings VALUES(1,?)', (json.dumps(c.DEFAULTS),))
+        stored = json.loads(db.execute('SELECT value FROM settings WHERE id=1').fetchone()[0])
+        if 'hashtag_groups' not in stored:
+            # Earlier versions kept one favourites list; it becomes the first library group.
+            from .hashtags import legacy_groups
+            stored['hashtag_groups'] = legacy_groups(stored.get('caption_hashtags',''))
+            stored['caption_hashtags'] = ''
+            db.execute('UPDATE settings SET value=? WHERE id=1', (json.dumps(stored),))
 
 def settings(db=None):
     if db is not None:

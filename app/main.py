@@ -24,7 +24,7 @@ from . import config as c
 from .db import init, connect, settings, secret, event, runtime
 from .planner import plan, conservation, daily_limit, runway_days, KIND_SQL
 from .security import verify_media
-from . import instagram as ig, ai, media, songs, notifications as ntfy
+from . import instagram as ig, ai, media, songs, hashtags, notifications as ntfy
 from .worker import tick, send_post_now
 from .youtube_api import router as youtube_router
 
@@ -299,7 +299,7 @@ class SettingsPatch(BaseModel):
 def update_settings(body: SettingsPatch):
     s = settings()
     caption_fields = ('ai_model','ai_vision','caption_instructions','voice_notes','business_context','brand_name',
-                      'caption_blocklist','caption_signoff','caption_hashtags','hashtags_per_post','caption_avoid_camera','caption_unique')
+                      'caption_blocklist','caption_signoff','hashtag_groups','hashtag_new_max','hashtags_per_post','caption_avoid_camera','caption_unique')
     previous_caption_config = tuple(s[k] for k in caption_fields)
     for key,value in body.values.items():
         if key not in c.DEFAULTS:
@@ -317,18 +317,14 @@ def update_settings(body: SettingsPatch):
     endings = [line.strip() for line in s['caption_signoff'].splitlines() if line.strip()]
     if len(endings)>4 or any(len(line)>32 for line in endings):
         raise HTTPException(422,'Enter up to four sign-offs, each no longer than 32 characters.')
-    tags = []
-    for tag in s['caption_hashtags'].replace(',',' ').split():
-        tag = '#'+tag.lstrip('#')
-        if not re.fullmatch(r'#\w{1,50}',tag):
-            raise HTTPException(422,'Hashtags can use letters, numbers and underscores only: '+tag[:52])
-        if tag.casefold() not in {t.casefold() for t in tags}:
-            tags.append(tag)
-    if len(tags)>ai.MAX_FAVOURITES:
-        raise HTTPException(422,'Keep up to %d favourite hashtags. Reelflow picks five per post from them and its own finds.' % ai.MAX_FAVOURITES)
+    try:
+        s['hashtag_groups'] = hashtags.normalise(s['hashtag_groups'])
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
     if not 0<=s['hashtags_per_post']<=ai.MAX_TAGS:
         raise HTTPException(422,'Instagram allows up to five hashtags per post. Choose 0 to 5.')
-    s['caption_hashtags'] = ' '.join(tags)
+    if not 0<=s['hashtag_new_max']<=ai.MAX_TAGS:
+        raise HTTPException(422,'Choose 0 to 5 new hashtags per post.')
     mix = {}
     for kind in ('talking','bts','promo'):
         rule = {**c.DEFAULTS['content_mix'][kind], **(s['content_mix'].get(kind) or {})}
@@ -663,12 +659,31 @@ def run_rewrite(token, clip_id, instructions):
     with REWRITE_LOCK:
         REWRITES[token] = {**result,'at':time.time()}
 
+class TagSuggest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    count: int = Field(default=12,ge=5,le=60)
+
 @app.post('/api/hashtags/suggest')
-def hashtag_suggestions():
+def hashtag_suggestions(body: TagSuggest = None):
     try:
-        return {'hashtags':ai.suggest_hashtags(settings())}
+        return {'hashtags':ai.suggest_hashtags(settings(),body.count if body else 12)}
     except ai.CaptionError as exc:
         raise HTTPException(502,str(exc))
+
+class TagText(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    text: str = Field(max_length=100000)
+
+@app.post('/api/hashtags/parse')
+def hashtag_parse(body: TagText):
+    """Turn a pasted list (any format) into clean tags, so the page can preview before adding."""
+    tags, rejected = hashtags.parse(body.text)
+    return {'tags':tags[:hashtags.MAX_LIBRARY_TAGS],'rejected':rejected[:50],'rejected_count':len(rejected)}
+
+@app.get('/api/hashtags/stats')
+def hashtag_stats():
+    with connect() as db:
+        return {'tags':hashtags.stats(db)}
 
 @app.post('/api/clips/{clip_id}/regenerate')
 def regenerate(clip_id: str, body: CaptionRewrite = None):

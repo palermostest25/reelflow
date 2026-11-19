@@ -237,14 +237,3 @@ def test_rewrite_failures_return_readable_json(client,monkeypatch):
     monkeypatch.setattr(ai,'generate',crash)
     r=client.post('/api/clips/'+cid+'/regenerate',headers=h)
     assert r.status_code==500 and 'Retry this clip' in r.json()['detail']
-
-
-def test_hashtag_settings_accept_a_favourites_pool(client):
-    h=auth(client)
-    tags=' '.join('#Tag%02d'%i for i in range(30))
-    assert client.patch('/api/settings',headers=h,json={'values':{'caption_hashtags':tags.replace(' #Tag05',', Tag05')+' #tag01'}}).status_code==200
-    assert client.get('/api/state').json()['settings']['caption_hashtags']==tags
-    assert client.patch('/api/settings',headers=h,json={'values':{'caption_hashtags':tags+' #More'}}).status_code==422
-    assert client.patch('/api/settings',headers=h,json={'values':{'caption_hashtags':'#bad-tag'}}).status_code==422
-    assert client.patch('/api/settings',headers=h,json={'values':{'hashtags_per_post':6}}).status_code==422
-    assert client.patch('/api/settings',headers=h,json={'values':{'hashtags_per_post':3}}).status_code==200

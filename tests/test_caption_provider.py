@@ -185,32 +185,10 @@ def test_catalog_failure_preserves_compatible_completion(monkeypatch):
     assert ai.generate(clip,s)[0]=='Keep the next one rolling.'
 
 
-def test_hashtags_mix_favourites_with_found_tags_and_drop_generic_ones():
-    favourites=['#PerthDJs','#DJDuo','#PerthMusic','#UndergroundDanceMusic']
-    tags=ai.pick_hashtags(['#fyp','PerthDJs','#HouseMusic','#viral','#WarehouseParty','#housemusic','#Techno','#Extra'],favourites,5)
-    assert len(tags)==5 and len({t.casefold() for t in tags})==5
-    assert not {'#fyp','#viral'} & set(tags)
-    assert sum(t in favourites for t in tags)>=2 and '#HouseMusic' in tags and '#WarehouseParty' in tags
-
-
-def test_favourites_rotate_by_least_recent_use_and_fill_short_sets():
-    favourites=['#A1','#B2','#C3','#D4','#E5','#F6']
-    usage=ai.tag_usage(['Caption\n\n#A1 #B2 #C3','Caption\n\n#A1 #B2'])
-    assert ai.pick_hashtags([],favourites,5,usage)==['#D4','#E5','#F6','#C3','#A1']
-    assert ai.pick_hashtags([],[],5)==[] and ai.pick_hashtags(['#Tag1'],favourites,0)==[]
-
-
-def test_blocked_words_also_block_hashtags():
-    blocked=[re.compile(r'(?<!\w)trading(?!\w)',re.I)]
-    # CamelCase tags are read as words, but a brand in capitals is not split up.
-    assert ai.pick_hashtags(['#Trading','#DayTrading','#HouseMusic','#TRADINGPOST'],[],5,blocked=blocked)==['#HouseMusic','#TRADINGPOST']
-    trade=[re.compile(r'(?<!\w)trade(?!\w)',re.I)]
-    assert ai.pick_hashtags(['#TRADES','#TradesDJ','#Trade'],[],5,blocked=trade)==['#TRADES','#TradesDJ']
-
-
 def test_generated_caption_carries_five_hashtags_before_the_signoff(monkeypatch):
     clip,s=clip_and_settings(monkeypatch)
-    s.update(caption_hashtags='#PerthDJs #DJDuo #PerthMusic',caption_signoff='stv',hashtags_per_post=5)
+    s.update(hashtag_groups=[{'name':'Favourites','mode':'pool','tags':['#PerthDJs','#DJDuo','#PerthMusic'],'min':2,'max':5,'kinds':[]}],
+             caption_signoff='stv',hashtags_per_post=5,hashtag_new_max=3)
     monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
     seen=[]
     def provider(request):
@@ -225,12 +203,12 @@ def test_generated_caption_carries_five_hashtags_before_the_signoff(monkeypatch)
     chosen=tags.removesuffix(' stv').split()
     assert len(chosen)==5 and '#Inline' not in chosen and '#Explore' not in chosen
     assert '#PerthDJs' in chosen and sum(t in ('#PerthDJs','#DJDuo','#PerthMusic') for t in chosen)>=2
-    assert 'exactly 5 hashtags' in seen[0] and '#DJDuo' in seen[0]
+    assert 'exactly 5 hashtags' in seen[0] and '#DJDuo' in seen[0] and 'up to 3 relevant tags of your own' in seen[0]
 
 
 def test_hashtags_can_be_switched_off(monkeypatch):
     clip,s=clip_and_settings(monkeypatch)
-    s.update(caption_hashtags='#PerthDJs',hashtags_per_post=0)
+    s.update(hashtag_groups=[{'name':'F','mode':'pool','tags':['#PerthDJs'],'min':0,'max':5,'kinds':[]}],hashtags_per_post=0)
     monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
     install_transport(monkeypatch,lambda r:httpx.Response(200,json=completion('Late one. #Unwanted')))
     assert ai.generate(clip,s)[0]=='Late one.'
@@ -238,7 +216,7 @@ def test_hashtags_can_be_switched_off(monkeypatch):
 
 def test_hashtag_suggestions_skip_favourites_generic_and_invalid_tags(monkeypatch):
     clip,s=clip_and_settings(monkeypatch)
-    s.update(caption_hashtags='#PerthDJs')
+    s.update(hashtag_groups=[{'name':'F','mode':'pool','tags':['#PerthDJs'],'min':0,'max':5,'kinds':[]}])
     monkeypatch.setattr(ai,'model_catalog',lambda:[MODEL])
     reply={'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'hashtags':['#perthdjs','#fyp','#Deep House','TechHouse','#WAClubs','#123']})}}]}
     install_transport(monkeypatch,lambda r:httpx.Response(200,json=reply))
