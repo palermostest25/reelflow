@@ -39,8 +39,9 @@ for name, digest in ASSETS.items():
 @asynccontextmanager
 async def lifespan(app):
     init()
-    from . import edits
+    from . import edits, rewrites
     edits.recover()
+    rewrites.resume_all()
     yield
 
 app = FastAPI(title='Reelflow',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
@@ -658,6 +659,38 @@ def run_rewrite(token, clip_id, instructions):
         result = {'state':'error','status':500,'message':'Caption rewrite failed unexpectedly. Retry this clip; check the container logs if it keeps failing.'}
     with REWRITE_LOCK:
         REWRITES[token] = {**result,'at':time.time()}
+
+class RewriteBatch(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    clips: list[str] = Field(min_length=1,max_length=2000)
+    instructions: str = Field(default='',max_length=4000)
+
+@app.post('/api/rewrite-batches')
+def start_rewrite_batch(body: RewriteBatch):
+    from . import rewrites
+    try:
+        batch = rewrites.start(body.clips,body.instructions)
+    except RuntimeError as exc:
+        raise HTTPException(409,str(exc))
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
+    return rewrites.summary(batch)
+
+@app.get('/api/rewrite-batches/latest')
+def latest_rewrite_batch():
+    from . import rewrites
+    return {'batch':rewrites.summary()}
+
+@app.post('/api/rewrite-batches/{batch_id}/{action}')
+def control_rewrite_batch(batch_id: str, action: Literal['cancel','resume']):
+    from . import rewrites
+    try:
+        rewrites.control(batch_id,action)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except ValueError as exc:
+        raise HTTPException(409,str(exc))
+    return rewrites.summary(batch_id)
 
 class TagSuggest(BaseModel):
     model_config = ConfigDict(extra='forbid')

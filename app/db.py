@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS edits (
  id TEXT PRIMARY KEY, clip_id TEXT NOT NULL, created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'running',
  progress REAL NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', result_clip TEXT
 );
+CREATE TABLE IF NOT EXISTS rewrite_batches (
+ id TEXT PRIMARY KEY, created_at REAL NOT NULL, updated_at REAL NOT NULL, status TEXT NOT NULL,
+ instructions TEXT NOT NULL DEFAULT '', total INTEGER NOT NULL, message TEXT NOT NULL DEFAULT '', retry_at REAL NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS rewrite_items (
+ batch_id TEXT NOT NULL, clip_id TEXT NOT NULL, position INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+ attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(batch_id,clip_id)
+);
 CREATE TABLE IF NOT EXISTS youtube_short_checks (clip_id TEXT PRIMARY KEY REFERENCES clips(id));
 '''
 

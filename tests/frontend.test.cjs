@@ -62,13 +62,14 @@ test('successful delayed login opens the desk without refreshing or showing an e
   assert.equal(page.starts, 1);
 });
 
-test('bulk rewrite sends one-off guidance only to selected clips and keeps the unfinished selection', async () => {
+test('bulk rewrite runs as one server batch and keeps unfinished clips selected', async () => {
   const {context} = await loginPage();
   const requests = [];
   context.rewriteApi = async (path, method, body) => {
-    requests.push({path, method, instructions: body.instructions});
-    if (requests.length===2) throw new Error('Provider rate limited');
-    return {caption: 'New caption'};
+    requests.push({path, method, body});
+    if (path === '/api/rewrite-batches') return {id: 'b1', status: 'running', total: 3, done: 0, failed: 0, skipped: 0, items: []};
+    return {batch: {id: 'b1', status: 'paused', total: 3, done: 1, failed: 0, skipped: 0, message: 'Paused: credit is exhausted.',
+      items: [{clip_id: 'first', status: 'done'}, {clip_id: 'second', status: 'pending'}, {clip_id: 'third', status: 'pending'}]}};
   };
   const remaining = await vm.runInContext(`
     state = {settings: {}};
@@ -80,12 +81,13 @@ test('bulk rewrite sends one-off guidance only to selected clips and keeps the u
     api = rewriteApi;
     captionControls = () => {};
     refresh = async () => {};
-    regenerateSelected().then(() => [...selectedClips.keys()].join(','));
+    regenerateSelected().then(() => watchBatch()).then(() => [...selectedClips.keys()].join(',') + '|' + captionProgress);
   `, context);
-  assert.equal(remaining, 'second,third');
-  assert.deepEqual(requests, ['first','second'].map(id=>({
-    path: '/api/clips/'+id+'/regenerate', method: 'POST', instructions: 'Keep it playful.',
-  })));
+  const [selection, progress] = remaining.split('|');
+  assert.equal(selection, 'second,third');
+  assert.match(progress, /credit is exhausted/);
+  assert.equal(JSON.stringify(requests[0]), JSON.stringify({path: '/api/rewrite-batches', method: 'POST', body: {clips: ['first','second','third'], instructions: 'Keep it playful.'}}));
+  assert.equal(requests[1].path, '/api/rewrite-batches/latest');
 });
 
 test('rejected login preserves the input and allows a successful retry', async () => {

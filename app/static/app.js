@@ -365,6 +365,7 @@ function captionTools(){
    </label>
   </details>
   <p id="caption-progress" class="help" role="status"></p>
+  <div id="caption-batch-actions" class="inline-actions"></div>
  </section>`;
 }
 const laneName=lane=>lane==='main'?'Grid':'Trial';
@@ -416,6 +417,7 @@ function captionControls(){
  $('[data-action="regenerate-clips"]').disabled=captionBusy||!count||guidanceDraft!==null||!configured;
  $('#caption-selection-help').textContent=guidanceDraft!==null?'Save your caption guidance before regenerating.':!configured?'Connect a caption provider and choose a model in Settings.':state.rebuilding?'Wait for rebuilding to finish to select the whole library.':'Select prepared clips, then regenerate. Select all clips includes every page. Edited post captions and published posts are kept.';
  $('#caption-progress').textContent=captionProgress;
+ batchButtons(captionBatch);
  $('#caption-progress').classList.toggle('caption-failed',captionFailed);
  const oneOff=$('#batch-guidance');
  oneOff.disabled=captionBusy;
@@ -427,36 +429,44 @@ function captionControls(){
   box.disabled=captionBusy;
  });
 }
+let batchWatch=null, captionBatch=null;
 async function regenerateSelected(){
  if(captionBusy||guidanceDraft!==null||!selectedClips.size)return;
- const batch=[...selectedClips], instructions=batchGuidance.trim();
- captionBusy=true;captionFailed=false;
- let completed=0;
+ captionBusy=true;captionFailed=false;captionProgress='Starting…';captionControls();
  try{
-  for(const [id,name] of batch){
-   if(!state||$('#shell').hidden)return;
-   captionProgress=`Regenerating ${completed+1} of ${batch.length}: ${name}`;
-   captionControls();
-   try{
-    await rewriteCaption(id,instructions);
-   }catch(e){
-    captionProgress=`${completed} of ${batch.length} regenerated. Stopped at ${name}: ${e.message} Remaining clips are still selected.`;
-    captionFailed=true;
-    break;
-   }
-   selectedClips.delete(id);
-   completed++;
+  captionBatch=await api('/api/rewrite-batches','POST',{clips:[...selectedClips.keys()],instructions:batchGuidance.trim()});
+  batchGuidance='';
+ }catch(e){captionBusy=false;captionFailed=true;captionProgress=e.message;captionControls();return;}
+ watchBatch();
+}
+function describeBatch(b){
+ const finished=b.done+b.failed+b.skipped;
+ if(b.status==='running')return `Rewriting on the server: ${b.done} of ${b.total} done${b.failed?`, ${b.failed} failed`:''}.${b.message?' '+b.message:' You can leave this page; it keeps going.'}`;
+ if(b.status==='paused')return `${b.done} of ${b.total} done. ${b.message}`;
+ if(b.status==='cancelled')return `${b.done} of ${b.total} rewritten before you cancelled.`;
+ return b.message||`${finished} of ${b.total} finished.`;
+}
+function batchButtons(b){
+ const box=$('#caption-batch-actions');if(!box)return;
+ box.innerHTML=b&&['running','paused'].includes(b.status)?`${b.status==='paused'?'<button type="button" class="button small" data-batch-action="resume">Resume</button>':''}<button type="button" class="text-button" data-batch-action="cancel">Cancel batch</button>`:b&&b.status==='done'&&b.failed?'<button type="button" class="button small" data-batch-action="resume">Retry the failed clips</button>':'';
+}
+async function watchBatch(){
+ if(batchWatch)return;
+ batchWatch=true;let misses=0;
+ try{
+  while(state&&!$('#shell').hidden){
+   let b;
+   try{b=(await api('/api/rewrite-batches/latest')).batch;misses=0;}
+   catch(e){misses++;captionProgress=`Connection to Reelflow lost (${e.message}). The batch keeps running on the server; reconnecting…`;captionControls();await new Promise(r=>setTimeout(r,Math.min(30000,3000*misses)));continue;}
+   if(!b)break;
+   captionBatch=b;
+   for(const item of b.items)if(item.status==='done'||item.status==='skipped')selectedClips.delete(item.clip_id);else if(!selectedClips.has(item.clip_id))selectedClips.set(item.clip_id,item.name||item.clip_id);
+   captionBusy=b.status==='running';captionFailed=b.status==='paused'||(b.status==='done'&&b.failed>0);
+   captionProgress=describeBatch(b);captionControls();batchButtons(b);
+   if(b.status!=='running'){if(currentPage==='library')await refresh();else toast(captionProgress,captionFailed);break;}
+   await new Promise(r=>setTimeout(r,3000));
   }
-  if(!captionFailed){
-   batchGuidance='';
-   captionProgress=`Regenerated ${completed} caption${completed===1?'':'s'}.`;
-  }
- }finally{
-  captionBusy=false;
-  captionControls();
- }
- if(state&&currentPage==='library'&&!$('#shell').hidden)await refresh();
- else if(state&&!$('#shell').hidden)toast(captionProgress,captionFailed);
+ }finally{batchWatch=null;}
 }
 function bindCaptionTools(){
  const form=$('#caption-guidance-form');
@@ -804,7 +814,7 @@ window.addEventListener('hashchange',()=>{offset=0;filter='all';if(state)render(
 document.addEventListener('click',async e=>{
  const target=e.target.closest('button');if(!target)return;
  if(target.dataset.queueView){queueView=target.dataset.queueView;offset=0;await render();return;}
- if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}if(target.dataset.libraryView){libraryView=target.dataset.libraryView;offset=0;await render();return;}if(target.dataset.openClip){await openClip(target.dataset.openClip);return;}if(target.dataset.funnyEdit){await openEditTool(target.dataset.funnyEdit);return;}
+ if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}if(target.dataset.batchAction&&captionBatch){await busy(target,async()=>{captionBatch=await api(`/api/rewrite-batches/${captionBatch.id}/${target.dataset.batchAction}`,'POST');captionProgress=describeBatch(captionBatch);captionControls();if(captionBatch.status==='running')watchBatch();else if(currentPage==='library')await refresh();});return;}if(target.dataset.libraryView){libraryView=target.dataset.libraryView;offset=0;await render();return;}if(target.dataset.openClip){await openClip(target.dataset.openClip);return;}if(target.dataset.funnyEdit){await openEditTool(target.dataset.funnyEdit);return;}
  if(target.dataset.createShort){await busy(target,async()=>{
   const result=await api('/api/youtube/shorts','POST',{clip_id:target.dataset.createShort});
   $('#editor').close();
@@ -863,7 +873,8 @@ document.addEventListener('click',async e=>{
   if(a==='models'){const models=await api('/api/models');$('#model-options').innerHTML=models.filter(m=>!state.settings.ai_vision||m.vision).map(m=>`<option value="${esc(m.id)}">${esc(m.name)}${m.vision?' · images':''}</option>`).join('');toast(`${models.length} models loaded. Type a name in the Model ID field.`);}
  });
 });
-async function start(){try{await loadState();$('#login').hidden=true;$('#shell').hidden=false;await render();}catch(e){if(!state)showLogin();else toast(e.message,true);}}
+async function start(){try{await loadState();$('#login').hidden=true;$('#shell').hidden=false;await render();resumeBatchWatch();}catch(e){if(!state)showLogin();else toast(e.message,true);}}
+async function resumeBatchWatch(){try{const {batch}=await api('/api/rewrite-batches/latest');if(batch&&['running','paused'].includes(batch.status)){captionBatch=batch;watchBatch();}}catch{}}
 icons();start();setInterval(()=>{if(!state||$('#editor').open)return;
  if(currentPage==='queue'&&scheduleDraft)return;
  if(currentPage==='library'&&(captionBusy||guidanceDraft!==null||$('#caption-guidance')?.contains(document.activeElement)||
