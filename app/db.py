@@ -64,6 +64,11 @@ CREATE TABLE IF NOT EXISTS rewrite_items (
  batch_id TEXT NOT NULL, clip_id TEXT NOT NULL, position INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
  attempts INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', PRIMARY KEY(batch_id,clip_id)
 );
+CREATE TABLE IF NOT EXISTS multicam_jobs (
+ id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL, status TEXT NOT NULL,
+ stage TEXT NOT NULL DEFAULT '', progress REAL NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '',
+ config TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', log TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS youtube_short_checks (clip_id TEXT PRIMARY KEY REFERENCES clips(id));
 '''
 

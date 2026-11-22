@@ -25,6 +25,7 @@ DEFAULTS = {
     'caption_instructions': '',
     'caption_blocklist': '', 'caption_signoff': '', 'caption_hashtags': '', 'hashtags_per_post': 5,
     'hashtag_groups': [], 'hashtag_new_max': 1,
+    'multicam_enabled': False,
     'caption_avoid_camera': 'guidance', 'caption_unique': True,
     'cover_mode': 'auto', 'export_quality': 'standard',
     'timezone': 'Australia/Perth', 'paused': True, 'dry_run': True,

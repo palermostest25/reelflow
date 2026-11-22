@@ -18,6 +18,7 @@ Start with [Docker deployment](#run-it-one-container-one-compose-file), follow t
 - Treats each upload or footage subfolder as a set and spreads sets through the queue, so one night never runs back to back. A set can instead be kept together and posted next.
 - Listens to every prepared clip with audio fingerprints (Chromaprint, via FFmpeg), finds clips that play the same song, and keeps them apart in both lanes. The library shows which clips match, with an audio-match percentage, and which have already been posted.
 - Picks five hashtags per post from a hashtag library: tags you always include, large lists the caption model chooses from (with per-group limits and rotation), tags you never want, and optionally a few the model finds itself. Paste lists in any format; reach per tag is tracked.
+- Has an optional Multicam tab: upload a DJ mix and camera angles and get a beat-synced full edit plus musical social clips, delivered into the queue.
 - Makes quick funny edits: mark someone's head on one frame and Reelflow follows them with an arrow, label, circle, spotlight or zoom punch-in. The edit is saved as a new clip; the original is never modified.
 - Mixes new clips into flexible queue positions, avoids adjacent scene categories where practical, and keeps edited captions and pinned times intact. Default same-clip separation across lanes: one day, editable down to zero.
 - Starts with editable posting windows for every weekday. After at least five mature, same-weekday observations in a lane, smoothed engagement per reach guides time selection. Every fifth calendar date explores a window. These are experiments, not a promise of optimal reach.
@@ -105,6 +106,16 @@ Open any clip and use **Type & timing → When should it post?**:
 - **Between two dates:** never scheduled before the first date or after the second. Once the window ends, unposted copies stay unscheduled and say why.
 
 Use the **Dated & windows** and **Talking & extras** filters to review them. The schedule marks these posts **Talking**, **Behind the scenes**, **Promo** and **Dated**.
+
+### Multicam editor
+
+Turn on **Settings → Multicam editor** to add a **Multicam** tab. Give the set a name, drop in the mix (WAV, AIFF, FLAC, MP3 or M4A: the desk recording or a bounce) and 1–8 camera videos (MP4 or MOV), and pick the main camera. Uploads go in 64 MB pieces, so they get through a Cloudflare tunnel, and resume after a dropped connection. For very large files, copy them into the footage folder's `multicam` subfolder on the server and pick them in the tab instead; normal intake ignores that folder.
+
+Choose what to make: a 16:9 **full edit** (sent to YouTube as a draft when it is 20–30 minutes, otherwise ready to download) and up to 30 **social clips** in 9:16, added to the Instagram queue mixed in or as a set to post next. **Pace** (chilled, balanced, energetic), **Looks** (mix it up or natural colour), **Quality** (1080p or 4K) and optional **Notes for the AI** cover the rest. The notes go to your caption provider, which turns them into engine settings (a named drop, parts to keep out of clips, a camera to favour at a time) and they also reach the clip captions.
+
+The editing engine is Multicam Studio's, vendored in `app/multicam_engine`. It syncs each camera to the mix by its sound (including clock drift), finds the tempo, bars, phrases, build-ups, drops and breakdowns, and cuts on bar lines and phrase starts, always on a drop's first downbeat: quick through drops, accelerating through build-ups and long in breakdowns, choosing angles for variety rather than a fixed back-and-forth. Social clips are whole musical phrases (build-up and drop, drop, groove, breakdown) that start on a bar line and land on the downbeat after their last bar. Each opens on a different camera, so clips from the same song differ, and with **Mix it up** about a third are black and white while the rest rotate through colour looks. Picture scoring (exposure, blur, a blocked lens) runs when the server can decode video in hardware.
+
+Finished clips join the library with notes for the caption writer and go through the usual preparation and captions. Uploaded sources are deleted after a successful edit; files picked from the server folder are never changed. One edit renders at a time. **Cancel**, **Retry** and **Delete** are on each edit, and a restart marks a running edit as interrupted so you can retry it (analysis is cached).
 
 ### Funny edits
 

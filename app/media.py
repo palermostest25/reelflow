@@ -11,6 +11,7 @@ from .db import connect, event, settings
 
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.webm'}
 YOUTUBE_SET_FOLDER = 'youtube-sets'
+MULTICAM_FOLDER = 'multicam'   # Long multicam sources; the Multicam tab uses them, normal intake skips them.
 MEDIA_VERSION = 1
 REBUILD_REQUESTED = -1
 COVER_MODES = ('auto', 'color', 'instagram')
@@ -210,7 +211,7 @@ def scan(now=None):
     for root in roots:
         for path in sorted(root.rglob('*')):
             relative = path.relative_to(root)
-            if relative.parts[0]==YOUTUBE_SET_FOLDER or path.is_symlink() or not path.is_file() or path.suffix.lower() not in EXTENSIONS or any(x.startswith('.') for x in relative.parts):
+            if relative.parts[0] in (YOUTUBE_SET_FOLDER, MULTICAM_FOLDER) or path.is_symlink() or not path.is_file() or path.suffix.lower() not in EXTENSIONS or any(x.startswith('.') for x in relative.parts):
                 continue
             stat = settled_file(path,now)
             if stat is None or stat.st_size > 5_000_000_000:

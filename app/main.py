@@ -39,9 +39,10 @@ for name, digest in ASSETS.items():
 @asynccontextmanager
 async def lifespan(app):
     init()
-    from . import edits, rewrites
+    from . import edits, rewrites, multicam
     edits.recover()
     rewrites.resume_all()
+    multicam.recover()
     yield
 
 app = FastAPI(title='Reelflow',docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
@@ -659,6 +660,67 @@ def run_rewrite(token, clip_id, instructions):
         result = {'state':'error','status':500,'message':'Caption rewrite failed unexpectedly. Retry this clip; check the container logs if it keeps failing.'}
     with REWRITE_LOCK:
         REWRITES[token] = {**result,'at':time.time()}
+
+class MulticamNew(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(default='',max_length=80)
+
+@app.get('/api/multicam')
+def multicam_overview():
+    from . import multicam
+    return {'jobs':multicam.jobs(),'sources':multicam.sources(),'source_folder':str(multicam.source_root()),
+            'chunk':multicam.CHUNK,'counts':multicam.CLIP_COUNTS}
+
+@app.post('/api/multicam/jobs')
+def multicam_create(body: MulticamNew):
+    from . import multicam
+    if not settings()['multicam_enabled']:
+        raise HTTPException(409,'Turn on the multicam editor in Settings first.')
+    return {'id':multicam.create(body.name)}
+
+@app.post('/api/multicam/jobs/{job_id}/upload')
+async def multicam_upload(job_id: str, request: Request, name: str, offset: int = 0, final: bool = False):
+    from . import multicam
+    try:
+        return await multicam.receive_chunk(job_id,name,offset,request.stream(),final)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
+
+@app.post('/api/multicam/jobs/{job_id}/start')
+def multicam_start(job_id: str, body: dict):
+    from . import multicam
+    try:
+        multicam.get(job_id)
+        multicam.start(job_id,body)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
+    return multicam.public(multicam.get(job_id))
+
+@app.post('/api/multicam/jobs/{job_id}/{action}')
+def multicam_control(job_id: str, action: Literal['cancel','retry','delete']):
+    from . import multicam
+    try:
+        multicam.control(job_id,action)
+    except LookupError as exc:
+        raise HTTPException(404,str(exc))
+    except ValueError as exc:
+        raise HTTPException(409,str(exc))
+    return {'ok':True}
+
+@app.get('/api/multicam/jobs/{job_id}/full')
+def multicam_full(job_id: str):
+    from . import multicam
+    try:
+        path = multicam.full_path(job_id)
+    except (LookupError, ValueError):
+        path = None
+    if not path:
+        raise HTTPException(404,'The full edit is not available here.')
+    return FileResponse(path,media_type='video/mp4',filename=path.name)
 
 class RewriteBatch(BaseModel):
     model_config = ConfigDict(extra='forbid')

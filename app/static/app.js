@@ -1,14 +1,14 @@
 'use strict';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const paths={list:'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',film:'M4 3h16v18H4zM4 7h16M4 17h16M8 3v4M16 3v4M8 17v4M16 17v4',check:'m5 12 4 4L19 6',chart:'M4 20V4M4 20h17M8 16v-4M13 16V8M18 16V5',activity:'M2 12h4l3-8 5 16 3-8h5',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M10 2h4l1 3 3 1 3 2-1 4 1 4-3 2-3 1-1 3h-4l-1-3-3-1-3-2 1-4-1-4 3-2 3-1z',pause:'M8 5v14M16 5v14',play:'m8 4 12 8-12 8z',plus:'M12 4v16M4 12h16',upload:'M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5',arrow:'M4 12h16m-6-6 6 6-6 6',refresh:'M20 7a9 9 0 1 0 1 8M20 2v5h-5',x:'M6 6l12 12M18 6 6 18',edit:'m4 16 12-12 4 4L8 20H4zM13 7l4 4',instagram:'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M17 7h.01',clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v5l3 2',spark:'m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',external:'M14 3h7v7M21 3 10 14M10 3H3v18h18v-7'};
+const paths={camera:'M3 7h3l2-3h8l2 3h3v13H3zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8',list:'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',film:'M4 3h16v18H4zM4 7h16M4 17h16M8 3v4M16 3v4M8 17v4M16 17v4',check:'m5 12 4 4L19 6',chart:'M4 20V4M4 20h17M8 16v-4M13 16V8M18 16V5',activity:'M2 12h4l3-8 5 16 3-8h5',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M10 2h4l1 3 3 1 3 2-1 4 1 4-3 2-3 1-1 3h-4l-1-3-3-1-3-2 1-4-1-4 3-2 3-1z',pause:'M8 5v14M16 5v14',play:'m8 4 12 8-12 8z',plus:'M12 4v16M4 12h16',upload:'M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5',arrow:'M4 12h16m-6-6 6 6-6 6',refresh:'M20 7a9 9 0 1 0 1 8M20 2v5h-5',x:'M6 6l12 12M18 6 6 18',edit:'m4 16 12-12 4 4L8 20H4zM13 7l4 4',instagram:'M7 3h10a4 4 0 0 1 4 4v10a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M17 7h.01',clock:'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18M12 7v5l3 2',spark:'m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',external:'M14 3h7v7M21 3 10 14M10 3H3v18h18v-7'};
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${paths[name]||paths.film}"/></svg>`;
 function icons(){document.querySelectorAll('[data-icon]').forEach(el=>el.innerHTML=icon(el.dataset.icon));}
 let state, currentPage='', filter='all', libraryView='all', setsOpen=false, offset=0, toastTimer, toastTarget, records=[], renderVersion=0, queueView='schedule', scheduleDraft=null;
 const selectedClips=new Map();
 let guidanceDraft=null, guidanceOpen=false, batchGuidance='', captionBusy=false, captionProgress='', captionFailed=false;
 let youtubeData, youtubeView='queue', youtubeOffset=0, youtubeFocus=null;
-const titles={queue:'Instagram',youtube:'YouTube',library:'Footage library',history:'Published',insights:'Audience & voice',activity:'Activity log',settings:'Settings'};
+const titles={queue:'Instagram',youtube:'YouTube',multicam:'Multicam',library:'Footage library',history:'Published',insights:'Audience & voice',activity:'Activity log',settings:'Settings'};
 async function api(path, method='GET', data){
  const headers={}; if(state?.csrf)headers['X-CSRF-Token']=state.csrf;
  if(data && !(data instanceof FormData))headers['Content-Type']='application/json';
@@ -38,7 +38,7 @@ const uploadButton=`<button class="primary" data-action="upload">${icon('plus')}
 const empty=(title,body,action='',ico='film')=>`<div class="empty-state">${icon(ico)}<h2>${title}</h2><p>${body}</p>${action}</div>`;
 const pager=length=>`<div class="pager"><button class="button small" data-action="previous" ${offset===0?'disabled':''}>Previous</button><span>${offset+1}–${offset+length}</span><button class="button small" data-action="next" ${length<50?'disabled':''}>Next</button></div>`;
 function showLogin(){$('#shell').hidden=true;$('#login').hidden=false;$('#login input').focus();}
-async function loadState(){state=await api('/api/state');$('#brand-label').textContent=state.settings.brand_name;$('.avatar').textContent=state.settings.brand_name.slice(0,1).toUpperCase();const accountLabel=$('#account-label');accountLabel.textContent=state.account?'@'+state.account.username:'Your workspace';accountLabel.title=accountLabel.textContent;$('#mode-badge').textContent=state.demo?'Local preview':state.settings.dry_run?'Dry run':'Live publishing';$('#mode-badge').className='badge '+(state.settings.dry_run?'':'green');$('#pause-button').innerHTML=icon(state.settings.paused?'play':'pause')+(state.settings.paused?'Resume':'Pause');$('#timezone-label').textContent=state.settings.timezone;$('#queue-count').textContent=state.main_remaining;const alive=state.heartbeat&&Date.now()/1000-Number(state.heartbeat)<180;$('#worker-label').textContent=alive?'Worker is running':'Worker is offline';$('.worker-indicator').className='worker-indicator'+(alive?' online':'');}
+async function loadState(){state=await api('/api/state');$('#brand-label').textContent=state.settings.brand_name;$('.avatar').textContent=state.settings.brand_name.slice(0,1).toUpperCase();const accountLabel=$('#account-label');accountLabel.textContent=state.account?'@'+state.account.username:'Your workspace';accountLabel.title=accountLabel.textContent;$('#mode-badge').textContent=state.demo?'Local preview':state.settings.dry_run?'Dry run':'Live publishing';$('#mode-badge').className='badge '+(state.settings.dry_run?'':'green');$('#pause-button').innerHTML=icon(state.settings.paused?'play':'pause')+(state.settings.paused?'Resume':'Pause');$('#timezone-label').textContent=state.settings.timezone;$('#queue-count').textContent=state.main_remaining;$('#nav-multicam').hidden=!state.settings.multicam_enabled;const alive=state.heartbeat&&Date.now()/1000-Number(state.heartbeat)<180;$('#worker-label').textContent=alive?'Worker is running':'Worker is offline';$('.worker-indicator').className='worker-indicator'+(alive?' online':'');}
 async function refresh(){await loadState();if(!$('#editor').open)await render();}
 async function render(){
  const version=++renderVersion;const page=location.hash.slice(1)||'queue';currentPage=titles[page]?page:'queue';
@@ -99,6 +99,10 @@ async function render(){
   html=youtubeWorkspace(data);
  }
  if(currentPage==='settings')html=settingsView();
+ if(currentPage==='multicam'){
+  if(!s.multicam_enabled)html=header('Multicam editor','Turn it on in Settings to sync camera angles to a mix and cut a full edit plus social clips.')+empty('The multicam editor is off.','Turn it on under Settings → Multicam editor.',`<a href="#settings" class="button">Open Settings ${icon('arrow')}</a>`,'camera');
+  else{const data=await api('/api/multicam');if(version!==renderVersion)return;mcData=data;html=multicamView(data);}
+ }
  if(version!==renderVersion)return;
  $('#content').innerHTML=html;icons();bindForms();
  if(youtubePage){
@@ -601,6 +605,9 @@ function bindTagLibrary(){
   if(b.dataset.addAllSuggestions!==undefined){const g=suggestionTarget();const n=addTags(g,tagSuggestions);toast(`Added ${n} tag${n===1?'':'s'} to ${tagGroups[g].name}. Save settings to apply.`);renderTagLibrary();return;}
  });
 }
+function multicamSettings(){
+ return `<section class="settings-section"><h2>Multicam editor</h2>${toggle('multicam_enabled','Show the Multicam tab','Upload a DJ mix and camera angles; Reelflow syncs them, cuts on the music, and delivers a full edit and social clips.')}</section>`;
+}
 function contentMix(){
  const mix=state.settings.content_mix||{};
  return `<section class="settings-section"><h2>Content mix</h2><p>DJ footage is the backbone. Other clip types are sprinkled in between, never back to back.</p>
@@ -613,9 +620,10 @@ function reelPresentation(){
  ${settingSelect('export_quality','Export quality',[['standard','Standard'],['detail','Higher detail']],'Higher detail uses more storage and bandwidth. Use Rebuild all videos to apply it to existing exports. Both profiles preserve the source framing.')}
  </section>`;
 }
-function settingsView(){const s=state.settings;return header('Workspace settings','Set it up once. Come back when you want to change the mix.')+`<form id="settings-form"><div class="settings-grid"><div><section class="settings-section"><h2>Instagram</h2><div class="connection">${icon('instagram')}<div><strong>${state.account?'@'+esc(state.account.username):'No account connected'}</strong><p>${state.account?'Connection expires '+day(state.account.expires_at):'Business or Creator account required'}</p>${badge(state.account?'Connected':'Setup needed',state.account?'green':'')}</div><div class="inline-actions"><a href="/auth/instagram/start" class="button">${state.account?'Reconnect Instagram':'Connect Instagram'} ${icon('arrow')}</a>${state.account?'<button type="button" data-action="disconnect" class="text-button">Disconnect</button>':''}</div><p class="help">${state.meta_configured?'Meta app is configured. Login imports your recent posts on the next worker pass.':'Add META_APP_ID and META_APP_SECRET to compose.yaml, set your public HTTPS URL, and restart Docker. The deployment guide covers the exact redirect URL and permissions.'}</p><p class="help">Redirect URL: <code>${esc(state.public_url)}/auth/instagram/callback</code></p></section><section class="settings-section"><h2>Captions & voice</h2><p>The account’s previous posts lead. These notes steer the result for any artist, business or creator.</p>${field('brand_name','Account / brand name') }<label>What is this account about?<textarea name="business_context">${esc(s.business_context)}</textarea></label><label>Voice & factual guardrails<textarea name="voice_notes" maxlength="4000">${esc(s.voice_notes)}</textarea></label><label>Custom caption instructions<textarea name="caption_instructions" maxlength="4000" placeholder="e.g. Write like us: dry humour, lowercase, no emojis. One short sentence. Never say ‘big things coming’.">${esc(s.caption_instructions)}</textarea><span>Sent to the caption model with every new caption and rewrite. Set tone, wording, hashtags or phrases to avoid. Existing captions stay as they are until you choose Rewrite caption. Factual accuracy and the caption format still apply.</span></label>${captionRules(s)}<div class="connection">${icon('spark')}<div><strong>${state.ai_configured?'AI provider connected':'Connect a caption provider'}</strong><p>${esc(state.ai_base)}</p></div></div><div class="inline-actions"><a href="/auth/openrouter/start" class="button">Sign in with OpenRouter ${icon('arrow')}</a><button type="button" class="button" data-action="models">Load model catalog</button></div><label>Model ID<input name="ai_model" list="model-options" value="${esc(s.ai_model)}" placeholder="Choose a model from the live catalog"><datalist id="model-options"></datalist><span>Use a model that accepts images with visual captions enabled. Model names come from the provider; no assumed model alias.</span></label><label>Or paste an API key<input name="ai_key" type="password" autocomplete="new-password" placeholder="${state.ai_configured?'A key is stored securely. Leave blank to keep it.':'OpenRouter or configured provider API key'}"><span>Encrypted on the server. Never returned to your browser.</span></label>${toggle('ai_vision','Use sampled footage frames','Three silent frames go to your selected AI provider. Disable for text and operator notes only.')}<p class="help">OpenRouter sign-in uses your OpenRouter credit. To use another OpenAI-compatible provider, change AI_BASE_URL in compose.yaml. A missing provider or failed caption holds the clip for review.</p></section>${reelPresentation()}${contentMix()}${hashtagLibrary()}</div><div><section class="settings-section"><h2>The posting rhythm</h2>${field('timezone','Audience timezone','text','Editable until you know where your audience is. Use an IANA name, e.g. Europe/London.')}${toggle('paused','Pause all publishing')}${toggle('dry_run','Dry run','Prepare and review the queue without posting to Instagram.')}${toggle('require_approval','Require approval for new posts','Off means fully automatic. Existing approvals stay as they are.')}${toggle('trials_enabled','Publish Trial Reels','Every clip once. Trials stay Trials; automatic graduation is off.')}<div class="form-row">${field('trials_per_day','Trial Reels per day','number','0 switches Trials off.','min="0" max="10"')}${field('main_per_day','Grid Reels per day','number','0 switches grid posts off.','min="0" max="10"')}</div><div class="form-row">${field('preview_days','Schedule preview (days)','number','','min="1" max="90"')}${field('min_gap_days','Same clip, lane gap (days)','number','','min="0" max="90"')}</div><p class="help">Grid Reels are shared to your profile and feed. Trials reach non-followers first and stay off your grid. Trial eligibility is checked by Instagram when publishing. There is no fallback that silently publishes a Trial to your main feed.</p><h3>Posting times</h3><div class="form-row">${field('posting_start_hour','First posting hour','number','24-hour time, in the audience timezone.','min="0" max="22"')}${field('posting_end_hour','Last posting hour','number','Allow at least 90 minutes between posts to the same destination.','min="1" max="23"')}</div>${toggle('learn_timing','Learn posting times from engagement','Off uses your preferred weekday hour and spreads extra posts across your window.')}<h3>Preferred hour by weekday</h3><div class="week-hours">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=>`<label>${d}<input type="number" name="hour_${i}" min="0" max="23" value="${s.schedule_hours[i]}" aria-label="${d} starting hour"></label>`).join('')}</div><p class="help">24-hour format. One grid slot favours this hour, within your posting window; extra posts and Trials spread across that window. When timing learning is on, five mature same-weekday observations unlock timing choices; every fifth date explores another hour.</p></section><section class="settings-section"><h2>Keep the footage going</h2>${toggle('conserve','Automatically conserve footage','Use the lighter rhythm below when stock is low or a footage break would exhaust the library.')}<div class="form-row">${field('conserve_every_days','Conservation: post every N days','number','','min="2" max="14"')}${field('conserve_main_per_day','Grid Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}</div>${field('conserve_trials_per_day','Trial Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}${field('low_watermark','Low-footage threshold (clips)','number','','min="0" max="365"')}${field('drought_until','No new footage until','date','Clear this date when you are filming again. If your conservation pace still cannot cover the gap, you get an alert.')}<div class="form-row">${field('ntfy_url','ntfy server','url')}${field('ntfy_topic','ntfy topic','text','Use a private topic or an authenticated server.')}</div><label>ntfy access token<input name="ntfy_token" type="password" autocomplete="new-password" placeholder="${state.ntfy_token_set?'Token stored. Leave blank to keep it.':'Optional bearer token'}"></label><button type="button" class="button small" data-action="notify">Send a test notification</button><p class="help">Save changes before testing. Low stock alerts are limited to once per day, failures have durable delivery retries, and post problems include a recovery prompt.</p></section></div></div><div class="save-bar"><button class="primary" type="submit">Save settings ${icon('check')}</button><span>Changes apply to the future queue. Pinned times stay in place.</span></div></form>`;}
+function settingsView(){const s=state.settings;return header('Workspace settings','Set it up once. Come back when you want to change the mix.')+`<form id="settings-form"><div class="settings-grid"><div><section class="settings-section"><h2>Instagram</h2><div class="connection">${icon('instagram')}<div><strong>${state.account?'@'+esc(state.account.username):'No account connected'}</strong><p>${state.account?'Connection expires '+day(state.account.expires_at):'Business or Creator account required'}</p>${badge(state.account?'Connected':'Setup needed',state.account?'green':'')}</div><div class="inline-actions"><a href="/auth/instagram/start" class="button">${state.account?'Reconnect Instagram':'Connect Instagram'} ${icon('arrow')}</a>${state.account?'<button type="button" data-action="disconnect" class="text-button">Disconnect</button>':''}</div><p class="help">${state.meta_configured?'Meta app is configured. Login imports your recent posts on the next worker pass.':'Add META_APP_ID and META_APP_SECRET to compose.yaml, set your public HTTPS URL, and restart Docker. The deployment guide covers the exact redirect URL and permissions.'}</p><p class="help">Redirect URL: <code>${esc(state.public_url)}/auth/instagram/callback</code></p></section><section class="settings-section"><h2>Captions & voice</h2><p>The account’s previous posts lead. These notes steer the result for any artist, business or creator.</p>${field('brand_name','Account / brand name') }<label>What is this account about?<textarea name="business_context">${esc(s.business_context)}</textarea></label><label>Voice & factual guardrails<textarea name="voice_notes" maxlength="4000">${esc(s.voice_notes)}</textarea></label><label>Custom caption instructions<textarea name="caption_instructions" maxlength="4000" placeholder="e.g. Write like us: dry humour, lowercase, no emojis. One short sentence. Never say ‘big things coming’.">${esc(s.caption_instructions)}</textarea><span>Sent to the caption model with every new caption and rewrite. Set tone, wording, hashtags or phrases to avoid. Existing captions stay as they are until you choose Rewrite caption. Factual accuracy and the caption format still apply.</span></label>${captionRules(s)}<div class="connection">${icon('spark')}<div><strong>${state.ai_configured?'AI provider connected':'Connect a caption provider'}</strong><p>${esc(state.ai_base)}</p></div></div><div class="inline-actions"><a href="/auth/openrouter/start" class="button">Sign in with OpenRouter ${icon('arrow')}</a><button type="button" class="button" data-action="models">Load model catalog</button></div><label>Model ID<input name="ai_model" list="model-options" value="${esc(s.ai_model)}" placeholder="Choose a model from the live catalog"><datalist id="model-options"></datalist><span>Use a model that accepts images with visual captions enabled. Model names come from the provider; no assumed model alias.</span></label><label>Or paste an API key<input name="ai_key" type="password" autocomplete="new-password" placeholder="${state.ai_configured?'A key is stored securely. Leave blank to keep it.':'OpenRouter or configured provider API key'}"><span>Encrypted on the server. Never returned to your browser.</span></label>${toggle('ai_vision','Use sampled footage frames','Three silent frames go to your selected AI provider. Disable for text and operator notes only.')}<p class="help">OpenRouter sign-in uses your OpenRouter credit. To use another OpenAI-compatible provider, change AI_BASE_URL in compose.yaml. A missing provider or failed caption holds the clip for review.</p></section>${reelPresentation()}${contentMix()}${hashtagLibrary()}${multicamSettings()}</div><div><section class="settings-section"><h2>The posting rhythm</h2>${field('timezone','Audience timezone','text','Editable until you know where your audience is. Use an IANA name, e.g. Europe/London.')}${toggle('paused','Pause all publishing')}${toggle('dry_run','Dry run','Prepare and review the queue without posting to Instagram.')}${toggle('require_approval','Require approval for new posts','Off means fully automatic. Existing approvals stay as they are.')}${toggle('trials_enabled','Publish Trial Reels','Every clip once. Trials stay Trials; automatic graduation is off.')}<div class="form-row">${field('trials_per_day','Trial Reels per day','number','0 switches Trials off.','min="0" max="10"')}${field('main_per_day','Grid Reels per day','number','0 switches grid posts off.','min="0" max="10"')}</div><div class="form-row">${field('preview_days','Schedule preview (days)','number','','min="1" max="90"')}${field('min_gap_days','Same clip, lane gap (days)','number','','min="0" max="90"')}</div><p class="help">Grid Reels are shared to your profile and feed. Trials reach non-followers first and stay off your grid. Trial eligibility is checked by Instagram when publishing. There is no fallback that silently publishes a Trial to your main feed.</p><h3>Posting times</h3><div class="form-row">${field('posting_start_hour','First posting hour','number','24-hour time, in the audience timezone.','min="0" max="22"')}${field('posting_end_hour','Last posting hour','number','Allow at least 90 minutes between posts to the same destination.','min="1" max="23"')}</div>${toggle('learn_timing','Learn posting times from engagement','Off uses your preferred weekday hour and spreads extra posts across your window.')}<h3>Preferred hour by weekday</h3><div class="week-hours">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=>`<label>${d}<input type="number" name="hour_${i}" min="0" max="23" value="${s.schedule_hours[i]}" aria-label="${d} starting hour"></label>`).join('')}</div><p class="help">24-hour format. One grid slot favours this hour, within your posting window; extra posts and Trials spread across that window. When timing learning is on, five mature same-weekday observations unlock timing choices; every fifth date explores another hour.</p></section><section class="settings-section"><h2>Keep the footage going</h2>${toggle('conserve','Automatically conserve footage','Use the lighter rhythm below when stock is low or a footage break would exhaust the library.')}<div class="form-row">${field('conserve_every_days','Conservation: post every N days','number','','min="2" max="14"')}${field('conserve_main_per_day','Grid Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}</div>${field('conserve_trials_per_day','Trial Reels per active day','number','Never exceeds your normal daily count.','min="1" max="10"')}${field('low_watermark','Low-footage threshold (clips)','number','','min="0" max="365"')}${field('drought_until','No new footage until','date','Clear this date when you are filming again. If your conservation pace still cannot cover the gap, you get an alert.')}<div class="form-row">${field('ntfy_url','ntfy server','url')}${field('ntfy_topic','ntfy topic','text','Use a private topic or an authenticated server.')}</div><label>ntfy access token<input name="ntfy_token" type="password" autocomplete="new-password" placeholder="${state.ntfy_token_set?'Token stored. Leave blank to keep it.':'Optional bearer token'}"></label><button type="button" class="button small" data-action="notify">Send a test notification</button><p class="help">Save changes before testing. Low stock alerts are limited to once per day, failures have durable delivery retries, and post problems include a recovery prompt.</p></section></div></div><div class="save-bar"><button class="primary" type="submit">Save settings ${icon('check')}</button><span>Changes apply to the future queue. Pinned times stay in place.</span></div></form>`;}
 function bindForms(){
  bindCaptionTools();
+ bindMulticam();
  bindTagLibrary();
  $('.sets-panel')?.addEventListener('toggle',e=>{setsOpen=e.currentTarget.open;});
  document.querySelectorAll('[data-set-kind]').forEach(select=>select.addEventListener('change',async()=>{select.disabled=true;try{await api('/api/batches/'+encodeURIComponent(select.dataset.setKind),'PATCH',{kind:select.value});toast(`Set marked as ${KINDS[select.value]}. The queue has been rebuilt.`);await refresh();}catch(e){toast(e.message,true);select.disabled=false;}}));
@@ -685,6 +693,134 @@ function coverControls(clip){
  <p class="help">Scrub the video to pick a frame, then save footage.</p></section>`;
 }
 const fmtTime=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}.${Math.floor((t%1)*10)}`;
+let mcData=null,mcMix=null,mcCams=[],mcMain=0,mcBusy=false,mcPoll=null;
+const AUDIO_EXT=/\.(wav|aiff?|flac|mp3|m4a)$/i,VIDEO_EXT=/\.(mp4|mov)$/i;
+const fmtSize=b=>b>=1e9?(b/1e9).toFixed(1)+' GB':Math.max(1,Math.round(b/1e6))+' MB';
+const fileName=f=>f.file?f.file.name:f.source;
+const mcActive=j=>['queued','running','cancelling'].includes(j.status);
+function mcInputs(){
+ const cam=(c,i)=>`<li class="mc-cam"><label class="mc-main" title="Main camera"><input type="radio" name="mc-main" value="${i}" ${mcMain===i?'checked':''}>Main</label><input class="mc-label" data-mc-label="${i}" maxlength="40" value="${esc(c.label)}" aria-label="Name for camera ${i+1}"><span class="mc-file">${esc(fileName(c))}${c.size?` · ${fmtSize(c.size)}`:''}</span><button type="button" class="icon-button" data-mc-remove="cam:${i}" aria-label="Remove camera ${i+1}">${icon('x')}</button></li>`;
+ return `<div class="mc-slot"><strong>Mix</strong>${mcMix?`<span class="mc-file">${esc(fileName(mcMix))}${mcMix.size?` · ${fmtSize(mcMix.size)}`:''}</span><button type="button" class="icon-button" data-mc-remove="mix" aria-label="Remove the mix">${icon('x')}</button>`:'<span class="help">Add the audio of the set: the desk recording or a bounce.</span>'}</div>
+ <div class="mc-slot mc-cams"><strong>Cameras</strong>${mcCams.length?`<ol>${mcCams.map(cam).join('')}</ol>`:'<span class="help">Add 1 to 8 camera videos (MP4 or MOV). They sync themselves to the mix, so start times don’t matter.</span>'}</div>`;
+}
+function mcJob(j){
+ const r=j.result||{};const active=mcActive(j);
+ const tone=j.status==='done'?'green':['failed','interrupted'].includes(j.status)?'rust':'';
+ const label={draft:'Uploading',queued:'Queued',running:'Working',cancelling:'Cancelling',done:'Finished',failed:'Failed',interrupted:'Interrupted',cancelled:'Cancelled'}[j.status]||j.status;
+ const facts=[r.bpm?`${Math.round(r.bpm)} BPM`:'',r.drops?`${r.drops} drop${r.drops===1?'':'s'}`:'',r.clips?.length?`${r.clips.length} clip${r.clips.length===1?'':'s'}`:''].filter(Boolean).join(' · ');
+ return `<article class="mc-job" data-mc-job="${j.id}"><div class="mc-job-head"><h3>${esc(j.name)}</h3>${badge(label,tone)}</div>
+ ${active?`<p class="help">${esc(j.stage)}</p><progress max="1" value="${j.progress}"></progress><p class="help">${Math.round(j.progress*100)}%</p>`:''}
+ ${j.message?`<p class="${['failed','interrupted'].includes(j.status)?'editor-error':'help'}">${esc(j.message)}</p>`:''}
+ ${facts?`<p class="help">${esc(facts)}</p>`:''}${r.guide?`<p class="help">AI: ${esc(r.guide)}</p>`:''}
+ ${r.clips?.length?`<ul class="mc-clips">${r.clips.map(c=>`<li>${esc(c.title||'Clip')} <span>${Math.round(c.duration||0)}s${c.look&&c.look!=='none'?' · '+esc(c.look):''}</span></li>`).join('')}</ul>`:''}
+ <div class="inline-actions">${active?`<button type="button" class="text-button" data-mc-action="cancel" data-id="${j.id}">Cancel</button>`:''}${['failed','interrupted','cancelled'].includes(j.status)?`<button type="button" class="button small" data-mc-action="retry" data-id="${j.id}">Retry</button>`:''}${r.full&&!r.youtube&&j.status==='done'?`<a class="button small" href="/api/multicam/jobs/${j.id}/full" download>${icon('upload')}Download full edit</a>`:''}${r.queued?`<a class="text-button" href="#library">See clips in the library</a>`:''}${r.youtube?`<a class="text-button" href="#youtube">Open YouTube</a>`:''}${!active?`<button type="button" class="text-button" data-mc-action="delete" data-id="${j.id}">Delete</button>`:''}</div>
+ ${j.log?.length?`<details class="mc-log"><summary>Engine log</summary><pre>${esc(j.log.join('\n'))}</pre></details>`:''}</article>`;
+}
+function mcJobs(data){return data.jobs.length?data.jobs.map(mcJob).join(''):'<p class="help">Finished edits and their progress appear here.</p>';}
+function multicamView(data){
+ const sources=data.sources||[];
+ const choice=(name,options,checked)=>options.map(([v,l,h])=>`<label><input type="radio" name="${name}" value="${v}" ${v===checked?'checked':''}><span><strong>${l}</strong>${h?esc(h):''}</span></label>`).join('');
+ return header('Multicam editor','Upload the mix and your camera angles. Reelflow syncs them, cuts on the music, and hands you a full edit plus social clips.')+`<div class="mc-layout">
+ <form id="mc-form" class="mc-form">
+ <section class="mc-step"><h2><span>1</span>The set</h2><label class="field">Name<input name="name" maxlength="80" placeholder="e.g. Mojo’s · 14 Nov" value="${esc(mcData?.draftName||'')}"></label></section>
+ <section class="mc-step"><h2><span>2</span>Mix and cameras</h2>
+ <div class="mc-drop" id="mc-drop">${icon('upload')}<p><strong>Drop the mix and camera videos here</strong><br>Audio files become the mix; MP4 and MOV files become cameras.</p><button type="button" class="button small" data-mc-pick>Choose files</button><input type="file" id="mc-files" multiple accept=".wav,.aif,.aiff,.flac,.mp3,.m4a,.mp4,.mov" hidden></div>
+ ${sources.length?`<details class="mc-sources"><summary>Use files already on the server (${sources.length})</summary><ul>${sources.map(f=>`<li><span>${esc(f.path)} · ${fmtSize(f.size)}</span><button type="button" class="text-button" data-mc-source="${esc(f.path)}" data-kind="${f.kind}">${f.kind==='audio'?'Use as the mix':'Add as a camera'}</button></li>`).join('')}</ul></details>`:`<p class="help">Huge files? Copy them into <code>${esc(data.source_folder)}</code> on the server and pick them here instead of uploading.</p>`}
+ <div id="mc-inputs">${mcInputs()}</div></section>
+ <section class="mc-step"><h2><span>3</span>What to make</h2>
+ <label class="toggle field"><span>Full edit (16:9)</span><input type="checkbox" name="full" checked></label>
+ <label class="toggle field"><span>Send it to YouTube as a draft when it’s 20–30 minutes</span><input type="checkbox" name="youtube" checked></label>
+ <label class="field">Social clips (9:16)<select name="clips">${[[12,'12 clips'],[6,'6 clips'],[20,'20 clips'],[30,'30 clips'],[0,'As many as the music offers'],[-1,'None']].map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select><span>Whole musical phrases: build-up and drop, drop, groove and breakdown moments that start on a bar line and land on the downbeat.</span></label>
+ <label class="toggle field"><span>Add the clips to the Instagram queue</span><input type="checkbox" name="queue" checked></label>
+ <label class="field">In the queue<select name="mode"><option value="mix">Mix them in with everything else</option><option value="next">Keep together, post next</option></select></label></section>
+ <section class="mc-step"><h2><span>4</span>Style</h2>
+ <fieldset class="field choice compact"><legend>Pace</legend>${choice('pace',[['chilled','Chilled','Longer holds, fewer cuts.'],['balanced','Balanced','Follows the music: quick in drops, long in breakdowns.'],['energetic','Energetic','More cuts, still on the beat.']],'balanced')}</fieldset>
+ <fieldset class="field choice compact"><legend>Looks on the clips</legend>${choice('looks',[['auto','Mix it up','About a third in black and white, the rest rotating warm, vivid, vintage and film looks.'],['off','Natural colour','']],'auto')}</fieldset>
+ <label class="field">Quality<select name="quality"><option value="1080">1080p · fastest</option><option value="2160">4K · slower, for big screens</option></select></label>
+ <label class="field">Notes for the AI (optional)<textarea name="notes" maxlength="2000" rows="3" placeholder="e.g. The big drop is at 42:10. Skip the first five minutes. Stay on the booth camera from 1:05:00 to 1:06:30."></textarea><span>Your caption AI turns these into settings: drops, parts to keep out of clips and camera preferences. The engine still makes every cut on the music. Facts here also go to the clip captions.</span></label></section>
+ <div class="drawer-actions"><button class="primary" type="submit" id="mc-start">${icon('spark')}Make the edit</button></div>
+ <progress id="mc-upload" max="1" value="0" hidden></progress><p id="mc-status" class="help" role="status"></p>
+ </form>
+ <aside class="mc-side"><h2>Edits</h2><div id="mc-jobs">${mcJobs(data)}</div>
+ <section class="side-section"><h3>How it cuts</h3><p>Every camera syncs to the mix by its sound. Cuts land on bar lines and phrase starts, always on a drop’s first downbeat: quick through drops, building through build-ups, long in breakdowns, and never a rigid back-and-forth.</p><p class="help">Each clip opens on a different camera, so two clips from one song never look the same.</p></section></aside></div>`;
+}
+function mcAddFiles(files){
+ let skipped=0;
+ for(const file of files){
+  if(AUDIO_EXT.test(file.name))mcMix={file,size:file.size};
+  else if(VIDEO_EXT.test(file.name)&&mcCams.length<8)mcCams.push({file,size:file.size,label:'Camera '+String.fromCharCode(65+mcCams.length)});
+  else skipped++;
+ }
+ if(skipped)toast(`Skipped ${skipped} file${skipped===1?'':'s'}: use WAV, AIFF, FLAC, MP3 or M4A for the mix and MP4 or MOV for cameras (up to 8).`,true);
+ $('#mc-inputs').innerHTML=mcInputs();icons();
+}
+async function mcUpload(jobId,file,onProgress){
+ const chunk=mcData.chunk||64*1024*1024;let offset=0,name=file.name;
+ while(true){
+  const end=Math.min(file.size,offset+chunk),final=end>=file.size;let tries=0,res;
+  for(;;){
+   try{
+    const r=await fetch(`/api/multicam/jobs/${jobId}/upload?name=${encodeURIComponent(file.name)}&offset=${offset}&final=${final}`,{method:'POST',headers:{'X-CSRF-Token':state.csrf,'Content-Type':'application/octet-stream'},body:file.slice(offset,end)});
+    res=await r.json().catch(()=>({detail:`Upload failed (HTTP ${r.status}).`}));
+    if(!r.ok)throw new Error(typeof res.detail==='string'?res.detail:'Upload failed.');
+    break;
+   }catch(e){if(++tries>=5)throw e;await new Promise(r=>setTimeout(r,2000*tries));}
+  }
+  if(res.resend_from!==undefined){offset=res.resend_from;continue;}
+  offset=end;onProgress(offset);if(res.name)name=res.name;
+  if(final)return name;
+ }
+}
+async function mcSubmit(form){
+ if(mcBusy)return;
+ if(!mcMix){toast('Add the mix (an audio file).',true);return;}
+ if(!mcCams.length){toast('Add at least one camera video.',true);return;}
+ const fd=new FormData(form);const clips=Number(fd.get('clips'));
+ if(!form.elements.full.checked&&clips<0){toast('Make a full edit, social clips or both.',true);return;}
+ mcBusy=true;$('#mc-start').disabled=true;const bar=$('#mc-upload'),status=$('#mc-status');
+ try{
+  const {id}=await api('/api/multicam/jobs','POST',{name:fd.get('name')||''});
+  const uploads=[mcMix,...mcCams].filter(x=>x.file);const total=uploads.reduce((n,x)=>n+x.file.size,0)||1;let done=0;
+  bar.hidden=!uploads.length;
+  for(const item of uploads){
+   status.textContent=`Uploading ${item.file.name}…`;
+   const base=done;item.upload=await mcUpload(id,item.file,sent=>{bar.value=(base+sent)/total;status.textContent=`Uploading ${item.file.name} · ${Math.round(bar.value*100)}%`;});
+   done+=item.file.size;
+  }
+  const ref=x=>x.file?{upload:x.upload}:{source:x.source};
+  status.textContent='Starting the edit…';
+  await api(`/api/multicam/jobs/${id}/start`,'POST',{audio:ref(mcMix),cameras:mcCams.map(cam=>({...ref(cam),label:cam.label})),main:Math.min(mcMain,mcCams.length-1),
+   clips,full:form.elements.full.checked,youtube:form.elements.youtube.checked,queue:form.elements.queue.checked,mode:fd.get('mode'),
+   pace:fd.get('pace'),looks:fd.get('looks'),quality:fd.get('quality'),notes:fd.get('notes')||''});
+  mcMix=null;mcCams=[];mcMain=0;status.textContent='';bar.hidden=true;
+  toast('Edit started. You can leave this page; it keeps going on the server.');
+  await render();
+ }catch(e){status.textContent=e.message;toast(e.message,true);}
+ finally{mcBusy=false;const b=$('#mc-start');if(b)b.disabled=false;}
+}
+function bindMulticam(){
+ const form=$('#mc-form');if(!form)return;
+ const input=$('#mc-files'),zone=$('#mc-drop');
+ input.addEventListener('change',()=>{mcAddFiles(input.files);input.value='';});
+ zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('dragging');});
+ zone.addEventListener('dragleave',()=>zone.classList.remove('dragging'));
+ zone.addEventListener('drop',e=>{e.preventDefault();zone.classList.remove('dragging');mcAddFiles(e.dataTransfer.files);});
+ form.addEventListener('input',e=>{if(e.target.dataset.mcLabel!==undefined)mcCams[Number(e.target.dataset.mcLabel)].label=e.target.value;if(e.target.name==='name')mcData.draftName=e.target.value;});
+ form.addEventListener('change',e=>{if(e.target.name==='mc-main')mcMain=Number(e.target.value);});
+ form.addEventListener('submit',e=>{e.preventDefault();mcSubmit(form);});
+ form.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.mcPick!==undefined){input.click();return;}
+  if(b.dataset.mcRemove){const [kind,i]=b.dataset.mcRemove.split(':');if(kind==='mix')mcMix=null;else{mcCams.splice(Number(i),1);if(mcMain>=mcCams.length)mcMain=0;}$('#mc-inputs').innerHTML=mcInputs();icons();return;}
+  if(b.dataset.mcSource){const path=b.dataset.mcSource;if(b.dataset.kind==='audio')mcMix={source:path};else if(mcCams.length<8&&!mcCams.some(c=>c.source===path))mcCams.push({source:path,label:'Camera '+String.fromCharCode(65+mcCams.length)});$('#mc-inputs').innerHTML=mcInputs();icons();}
+ });
+ clearInterval(mcPoll);
+ mcPoll=setInterval(async()=>{
+  if(currentPage!=='multicam'||!$('#mc-jobs')){clearInterval(mcPoll);return;}
+  if(!mcData?.jobs.some(mcActive))return;
+  try{const data=await api('/api/multicam');mcData={...data,draftName:mcData.draftName};const open=[...document.querySelectorAll('.mc-log[open]')].map(d=>d.closest('[data-mc-job]').dataset.mcJob);$('#mc-jobs').innerHTML=mcJobs(data);open.forEach(id=>{const d=document.querySelector(`[data-mc-job="${id}"] .mc-log`);if(d)d.open=true;});icons();}catch{}
+ },3000);
+}
 async function openEditTool(id){
  let clip=records.find(r=>r.id===id);if(!clip)[clip]=await api('/api/clips?only='+encodeURIComponent(id)+'&limit=1');if(!clip)return;
  const url='/api/preview/'+encodeURIComponent(id);
@@ -814,7 +950,7 @@ window.addEventListener('hashchange',()=>{offset=0;filter='all';if(state)render(
 document.addEventListener('click',async e=>{
  const target=e.target.closest('button');if(!target)return;
  if(target.dataset.queueView){queueView=target.dataset.queueView;offset=0;await render();return;}
- if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}if(target.dataset.batchAction&&captionBatch){await busy(target,async()=>{captionBatch=await api(`/api/rewrite-batches/${captionBatch.id}/${target.dataset.batchAction}`,'POST');captionProgress=describeBatch(captionBatch);captionControls();if(captionBatch.status==='running')watchBatch();else if(currentPage==='library')await refresh();});return;}if(target.dataset.libraryView){libraryView=target.dataset.libraryView;offset=0;await render();return;}if(target.dataset.openClip){await openClip(target.dataset.openClip);return;}if(target.dataset.funnyEdit){await openEditTool(target.dataset.funnyEdit);return;}
+ if(target.dataset.filter){filter=target.dataset.filter;offset=0;await render();return;}if(target.dataset.batchAction&&captionBatch){await busy(target,async()=>{captionBatch=await api(`/api/rewrite-batches/${captionBatch.id}/${target.dataset.batchAction}`,'POST');captionProgress=describeBatch(captionBatch);captionControls();if(captionBatch.status==='running')watchBatch();else if(currentPage==='library')await refresh();});return;}if(target.dataset.mcAction){const action=target.dataset.mcAction;if(action==='delete'&&!confirm('Delete this edit and its files? Clips already in the library stay.'))return;await busy(target,async()=>{await api(`/api/multicam/jobs/${target.dataset.id}/${action}`,'POST');toast({cancel:'Cancelling the edit.',retry:'Edit queued again.',delete:'Edit deleted.'}[action]);await render();});return;}if(target.dataset.libraryView){libraryView=target.dataset.libraryView;offset=0;await render();return;}if(target.dataset.openClip){await openClip(target.dataset.openClip);return;}if(target.dataset.funnyEdit){await openEditTool(target.dataset.funnyEdit);return;}
  if(target.dataset.createShort){await busy(target,async()=>{
   const result=await api('/api/youtube/shorts','POST',{clip_id:target.dataset.createShort});
   $('#editor').close();
