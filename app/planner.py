@@ -23,7 +23,7 @@ def window_scores(db, tz, lane):
     return scores
 
 def daily_limit(s, lane, interval=1):
-    if lane == 'trial' and not s['trials_enabled']:
+    if lane == 'trial' and (not s['trials_enabled'] or s.get('trials_blocked')):
         return 0
     cap = s['main_per_day'] if lane == 'main' else s['trials_per_day']
     return min(cap, s['conserve_main_per_day'] if lane == 'main' else s['conserve_trials_per_day']) if interval > 1 else cap

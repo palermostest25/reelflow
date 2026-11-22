@@ -174,7 +174,21 @@ def advance(job_id, now, *, manual_only=False):
         with connect(True) as db:
             db.execute('UPDATE jobs SET status=?,next_attempt=?,error=?,attempts=? WHERE id=?',('retry' if retry else 'failed',now+min(3600,60*2**attempts),str(exc),attempts,job_id))
             event(str(exc),'warning' if retry else 'error',job_id,db)
-        ntfy.enqueue('post-error:'+str(job_id),str(exc)+' Open Reelflow to review.')
+            blocked = job['lane']=='trial' and exc.code in ig.PERMISSION_CODES
+            if blocked:
+                # Every Trial would be refused the same way: pause the lane, keep regular Reels going.
+                current = settings(db)
+                current['trials_blocked'] = str(exc)
+                db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(current),))
+                event('Trial Reels paused: Instagram refused permission. Regular Reels keep posting. Use “Try Trial Reels again” once the account can post Trials.','error',db=db)
+        if blocked:
+            ntfy.enqueue('trials-blocked:'+time.strftime('%Y-%m-%d'),'Instagram refused Trial Reels for this account, so Reelflow paused them. Regular Reels keep posting. '+str(exc))
+            try:
+                plan()
+            except Exception:
+                pass
+        else:
+            ntfy.enqueue('post-error:'+str(job_id),str(exc)+' Open Reelflow to review.')
     except Exception:
         # A storage failure after the publish response must remain held as uncertain.
         with connect(True) as db:

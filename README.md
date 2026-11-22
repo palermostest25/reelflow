@@ -123,6 +123,14 @@ Open a prepared clip and choose **Funny edit**. Pause on the moment, drag a box 
 
 The edit is saved as a new clip in the same set, with the original's caption, and is linked to the original as the same song. **Replace the original in the queue** (on by default) excludes the original from future posting; its file and history stay. One edit renders at a time, usually in under a minute for a 30-second clip. Rendering continues if you close the drawer.
 
+### Use an NVIDIA GPU
+
+With an NVIDIA GPU (a T1000 works well), Reelflow encodes clip exports and funny edits with NVENC, and multicam renders use NVENC with CUDA decoding (which also turns on the engine's picture scoring). Each path checks the GPU with a real test encode and falls back to the CPU if it is missing or busy.
+
+1. Install the NVIDIA driver on the host. On TrueNAS SCALE: **Apps → Configuration → Settings → Install NVIDIA Drivers**, then confirm `nvidia-smi` works in the shell.
+2. Pass the GPU to the container. In `compose.yaml`, remove the `#` from the six `deploy:` lines under the `reelflow` service. In a TrueNAS custom app, add the same `deploy:` block to the app's YAML (or pick the GPU in the app's resources settings if your version offers it).
+3. Redeploy. **Settings → Reel covers & export → Video encoding** shows the GPU's name once Reelflow can use it. Choose **CPU only** there to keep the GPU free for something else.
+
 ### Review covers and export quality
 
 Under **Settings → Reel covers & export**, choose automatic cover selection, automatic with a colour preference, or Instagram's own default. The worker fills covers for existing prepared footage over successive passes. In the **Footage library**, open a clip to see the current cover. To override it, scrub to the frame you want, click **Use current frame**, then **Save footage**. **Use cover setting** clears the override. One clip's cover applies to its future grid and Trial uploads. The cover preview shows the selected frame; Instagram controls how it is cropped across its surfaces. [Meta's Reel cover parameters](https://github.com/fbsamples/reels_publishing_apis/blob/main/insta_reels_publishing_api_sample/README.md).

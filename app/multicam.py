@@ -361,7 +361,7 @@ def command(job_id, options, cameras, guide, workdir, name):
             '--output-dir', str(workdir/'out'), '--output-name', name, '--cache-dir', str(root()/'cache'),
             '--main-camera', main, '--seed', str(options['seed']), '--cut-scale', f'{max(0.3, min(3.0, scale)):.3f}',
             '--resolution', options['quality'], '--fps', '30', '--preset', 'veryfast', '--crf', '20',
-            '--encoder', 'auto', '--planner', 'smart', '--vision', 'auto', '--engine', '2',
+            '--encoder', 'auto' if settings()['gpu_mode'] == 'auto' else 'software', '--planner', 'smart', '--vision', 'auto', '--engine', '2',
             '--no-clip-alternatives', '--clip-aspect', '9:16', '--clip-resolution', '1080', '--clip-framing', 'smart',
             '--clip-filters', options['looks'], '--clip-fade', '0.08', '--overwrite']
     if 'main_share' in guide:

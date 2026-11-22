@@ -15,5 +15,14 @@ services:
     volumes:
       - reelflow-data:/data
       - ./footage:/footage:ro # Replace ./footage with your TrueNAS folder.
+    # NVIDIA GPU (for example a T1000): remove the # from the next six lines to encode on the GPU.
+    # The host needs the NVIDIA driver and container toolkit (TrueNAS: Apps > Configuration > Settings > Install NVIDIA Drivers).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 volumes:
   reelflow-data:

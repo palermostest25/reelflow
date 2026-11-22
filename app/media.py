@@ -20,6 +20,37 @@ EXPORT_QUALITIES = {
     'detail': ('18', '20M', '25M'),
 }
 
+_gpu = None
+
+def gpu():
+    """NVENC on an NVIDIA GPU passed into the container (for example a T1000), checked with a real encode."""
+    global _gpu
+    if _gpu is None:
+        found = {'nvenc': False, 'name': ''}
+        try:
+            probe_run = subprocess.run(['ffmpeg','-hide_banner','-v','error','-nostdin','-f','lavfi','-i','testsrc=size=256x144:rate=30:duration=0.1',
+                                        '-frames:v','2','-c:v','h264_nvenc','-pix_fmt','yuv420p','-f','null','-'],capture_output=True,timeout=30)
+            found['nvenc'] = probe_run.returncode == 0
+            if found['nvenc']:
+                smi = subprocess.run(['nvidia-smi','--query-gpu=name','--format=csv,noheader'],capture_output=True,text=True,timeout=10)
+                found['name'] = smi.stdout.strip().splitlines()[0] if smi.returncode == 0 and smi.stdout.strip() else 'NVIDIA GPU'
+        except (OSError, subprocess.SubprocessError):
+            pass
+        _gpu = found
+    return _gpu
+
+def use_gpu():
+    return settings()['gpu_mode'] == 'auto' and gpu()['nvenc']
+
+def video_encoder(quality='standard', gpu_ok=None):
+    """Encoder arguments for H.264: NVENC when the GPU is available and allowed, otherwise x264."""
+    crf, bitrate, buffer = EXPORT_QUALITIES[quality]
+    if use_gpu() if gpu_ok is None else gpu_ok:
+        # Constant-quality VBR, a notch above the x264 CRF so file sizes stay similar.
+        return ['-c:v','h264_nvenc','-preset','p5','-tune','hq','-rc','vbr','-cq',str(int(crf)+1),'-b:v','0',
+                '-maxrate',bitrate,'-bufsize',buffer,'-profile:v','high','-spatial-aq','1']
+    return ['-c:v','libx264','-preset','veryfast','-crf',crf,'-maxrate',bitrate,'-bufsize',buffer]
+
 def run(args, timeout=1800):
     result = subprocess.run(args, capture_output=True, timeout=timeout)
     if result.returncode:
@@ -121,13 +152,19 @@ def backfill_covers():
 
 def process(path, clip_id):
     duration, width, height = probe(path)
-    crf, bitrate, buffer = EXPORT_QUALITIES[settings()['export_quality']]
+    quality = settings()['export_quality']
     with TemporaryDirectory(prefix='.encode-',dir=c.DATA) as workspace:
         temp = Path(workspace) / (clip_id + '.mp4')
-        run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
-             '-vf',fit_frame(1920),'-r','30','-c:v','libx264','-preset','veryfast','-crf',crf,
-             '-maxrate',bitrate,'-bufsize',buffer,'-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-ar','48000',
-             '-movflags','+faststart','-threads','2',str(temp)])
+        def encode(gpu_ok):
+            run(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(path),'-map','0:v:0','-map','0:a:0?',
+                 '-vf',fit_frame(1920),'-r','30',*video_encoder(quality,gpu_ok),'-pix_fmt','yuv420p',
+                 '-c:a','aac','-b:a','128k','-ar','48000','-movflags','+faststart','-threads','2',str(temp)])
+        try:
+            encode(use_gpu())
+        except ValueError:
+            if not use_gpu():
+                raise
+            encode(False)  # A GPU hiccup (busy, driver reset) falls back to the CPU.
         if temp.stat().st_size > 1_000_000_000:
             raise ValueError('Converted clip exceeds Instagram\'s 1 GB limit.')
         frames = []

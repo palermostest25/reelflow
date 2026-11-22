@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from datetime import datetime
 import httpx
@@ -10,18 +11,34 @@ class MetaError(Exception):
         super().__init__(message)
         self.code, self.transient = code, transient
 
+# Meta's own words help: "(#10) Application does not have permission for this action" says far more
+# than a code. They are kept only after removing anything that looks like a URL, token or long ID.
+PERMISSION_CODES = {10, 200, 3}
+
+def clean_reason(text):
+    text = re.sub(r'https?://\S+', '[link]', str(text or ''))
+    text = re.sub(r'\b[A-Za-z0-9_\-]{32,}\b', '[hidden]', text)
+    return ' '.join(text.split())[:240]
+
 def request(method, path, token=None, **kwargs):
     token = token or secret('instagram_token')
     with httpx.Client(timeout=60) as client:
         response = client.request(method, 'https://graph.instagram.com/'+c.API_VERSION+'/'+path,
             headers={'Authorization':'Bearer '+token}, **kwargs)
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError:
+        data = {'error': {'code': 0, 'is_transient': response.status_code >= 500}}
     if response.status_code >= 400 or 'error' in data:
-        error = data.get('error',{})
-        # Do not persist provider messages: they can contain access tokens and signed URLs.
+        error = data.get('error',{}) if isinstance(data.get('error'),dict) else {}
         code = error.get('code',0)
-        raise MetaError('Instagram rejected the request (HTTP %s, code %s). Check account eligibility, permissions and connection.'%(response.status_code,code),
-                        code, response.status_code>=500 or response.status_code==429 or error.get('is_transient',False))
+        subcode = error.get('error_subcode')
+        reason = clean_reason(error.get('error_user_msg') or error.get('message'))
+        message = 'Instagram rejected the request (HTTP %s, code %s%s)' % (response.status_code, code, ', subcode %s' % subcode if subcode else '')
+        message += (': ' + reason) if reason else '. Check account eligibility, permissions and connection.'
+        if reason and not message.endswith('.'):
+            message += '.'
+        raise MetaError(message, code, response.status_code>=500 or response.status_code==429 or error.get('is_transient',False))
     return data
 
 def connect_account(code):

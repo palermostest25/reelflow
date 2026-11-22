@@ -152,7 +152,7 @@ def state(request: Request):
             'next_post':dict(next_post) if next_post else None,'heartbeat':runtime('heartbeat'),
             'csrf':request.session.get('csrf',''),'demo':c.DEMO,'meta_configured':bool(c.META_ID and c.META_SECRET),
             'ai_configured':bool(ai.api_key()),'ai_base':c.AI_BASE,'ntfy_token_set':bool(secret('ntfy_token')),
-            'metric_samples':metric_count,'public_url':c.PUBLIC_URL,'footage_path':str(c.FOOTAGE),'song_matching':songs.available()}
+            'metric_samples':metric_count,'public_url':c.PUBLIC_URL,'footage_path':str(c.FOOTAGE),'gpu':media.gpu(),'song_matching':songs.available()}
 
 @app.get('/api/schedule')
 def schedule(days: int = None):
@@ -312,6 +312,8 @@ def update_settings(body: SettingsPatch):
         if isinstance(value,str) and len(value)>4000:
             raise HTTPException(422,'Setting too long.')
         s[key] = value
+    if s['gpu_mode'] not in ('auto','off'):
+        raise HTTPException(422,'Choose GPU or CPU encoding.')
     if s['cover_mode'] not in media.COVER_MODES or s['export_quality'] not in media.EXPORT_QUALITIES:
         raise HTTPException(422,'Choose an available cover and export quality setting.')
     if s['caption_avoid_camera'] not in ('guidance','avoid','allow'):
@@ -721,6 +723,22 @@ def multicam_full(job_id: str):
     if not path:
         raise HTTPException(404,'The full edit is not available here.')
     return FileResponse(path,media_type='video/mp4',filename=path.name)
+
+@app.post('/api/trials/unblock')
+def unblock_trials():
+    """Try Trial Reels again: clear the pause and requeue Trials refused for permission."""
+    with connect(True) as db:
+        s = settings(db)
+        s['trials_blocked'] = ''
+        db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(s),))
+        refused = re.compile(r'Instagram rejected the request \(HTTP \d+, code (%s)[,):]' % '|'.join(map(str,ig.PERMISSION_CODES)))
+        ids = [r['id'] for r in db.execute("SELECT id,error FROM jobs WHERE lane='trial' AND status='failed'") if refused.match(r['error'] or '')]
+        for job_id in ids:
+            db.execute("UPDATE jobs SET status='queued',attempts=0,next_attempt=0,error='',container_id=NULL WHERE id=?",(job_id,))
+        count = len(ids)
+        event(f'Trial Reels resumed; {count} refused Trial{"s" if count != 1 else ""} queued again.',db=db)
+    plan()
+    return {'ok':True,'requeued':count}
 
 class RewriteBatch(BaseModel):
     model_config = ConfigDict(extra='forbid')

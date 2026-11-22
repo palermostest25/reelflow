@@ -83,3 +83,34 @@ def test_first_login_adapts_default_brand_for_another_account(monkeypatch):
     monkeypatch.setattr(ig,'request',lambda *a,**kw:{'user_id':'87654321','username':'another_creator'})
     ig.connect_account('test-only-code')
     assert settings()['brand_name']=='another_creator'
+
+
+def test_gpu_encoding_is_used_when_found_and_falls_back_to_the_cpu(monkeypatch):
+    from conftest import set_settings
+    assert '-c:v' in media.video_encoder('standard',False) and 'libx264' in media.video_encoder('standard',False)
+    nv = media.video_encoder('standard',True)
+    assert nv[nv.index('-c:v')+1]=='h264_nvenc' and nv[nv.index('-cq')+1]=='23'
+    monkeypatch.setattr(media,'_gpu',{'nvenc':True,'name':'NVIDIA T1000'})
+    assert media.use_gpu()
+    set_settings(gpu_mode='off')
+    assert not media.use_gpu()
+    set_settings(gpu_mode='auto')
+    if not shutil.which('ffmpeg'):
+        return
+    # A GPU that fails mid-encode: the clip is still prepared, on the CPU.
+    path=c.FOOTAGE/'gpu.mp4'
+    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=red:s=320x240:d=3.2','-c:v','libx264','-pix_fmt','yuv420p',str(path)],check=True)
+    real=media.run
+    encoders=[]
+    def flaky(args,timeout=1800):
+        if 'h264_nvenc' in args:
+            encoders.append('gpu');raise ValueError('Video conversion failed.')
+        if 'libx264' in args:encoders.append('cpu')
+        return real(args,timeout)
+    monkeypatch.setattr(media,'run',flaky)
+    seed(1,status='processing')
+    cid=media.digest(path)
+    with connect(True) as db:
+        db.execute("INSERT INTO clips(id,name,source,created_at,status) VALUES(?,?,?,?,'processing')",(cid,'gpu.mp4',str(path),time.time()))
+    media.process(path,cid)
+    assert encoders==['gpu','cpu'] and (c.DATA/'media'/(cid+'.mp4')).exists()

@@ -4,6 +4,10 @@ from app import worker,instagram as ig
 from app.db import connect
 from conftest import seed,set_settings,connected
 
+REAL_REQUEST=ig.request
+from fastapi.testclient import TestClient
+from app.main import app as web_app
+
 @pytest.fixture
 def job(monkeypatch):
     cid=seed(1)[0]
@@ -224,3 +228,36 @@ def test_publisher_uses_official_instagram_http_endpoints(monkeypatch):
     assert json.loads(seen[0].content)['video_url']=='https://reels.example/media/signed'
     assert json.loads(seen[2].content)=={'creation_id':'container-123'}
     assert all(r.headers['Authorization'].startswith('Bearer ') for r in seen)
+
+
+def test_a_trial_permission_refusal_pauses_trials_but_not_regular_reels(job,monkeypatch):
+    import httpx
+    from app import config as c
+    from app.db import settings
+    from app.planner import daily_limit
+    # Through the real request helper, so Meta's reason is kept but anything secret-looking is not.
+    reply={'error':{'message':'(#10) Application does not have permission for this action https://x.test/?token=SECRET',
+                    'code':10,'error_subcode':2207050,'fbtrace_id':'A'*40}}
+    original=httpx.Client
+    monkeypatch.setattr(ig.httpx,'Client',lambda **kw:original(transport=httpx.MockTransport(lambda r:httpx.Response(400,json=reply)),**kw))
+    monkeypatch.setattr(ig,'create_container',lambda account,post,url:REAL_REQUEST('POST',account+'/media',json={}))
+    worker.advance(job,time.time())
+    failed=row(job)
+    assert failed['status']=='failed'
+    assert failed['error'].startswith('Instagram rejected the request (HTTP 400, code 10, subcode 2207050): (#10) Application does not have permission')
+    assert 'SECRET' not in failed['error'] and 'x.test' not in failed['error']
+    s=settings()
+    assert s['trials_blocked'] and daily_limit(s,'trial')==0 and daily_limit(s,'main')==1
+    monkeypatch.setattr(ig.httpx,'Client',original)
+    with TestClient(web_app) as client:
+        assert client.post('/api/login',json={'password':c.PASSWORD}).status_code==200
+        h={'x-csrf-token':client.get('/api/state').json()['csrf']}
+        assert client.post('/api/trials/unblock',headers=h).json()=={'ok':True,'requeued':1}
+    assert not settings()['trials_blocked'] and row(job)['status']=='queued' and row(job)['error']==''
+
+def test_other_trial_errors_do_not_pause_the_lane(job,monkeypatch):
+    from app.db import settings
+    def fail(*a):raise ig.MetaError('Instagram rejected the request (HTTP 400, code 100): Invalid parameter.',100)
+    monkeypatch.setattr(ig,'create_container',fail)
+    worker.advance(job,time.time())
+    assert row(job)['status']=='failed' and not settings()['trials_blocked']

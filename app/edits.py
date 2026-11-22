@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from . import config as c
 from .db import connect, event
+from .media import video_encoder
 
 EFFECTS = ('arrow', 'circle', 'spotlight', 'zoom')
 RED, WHITE = (43, 56, 232), (255, 255, 255)  # BGR
@@ -264,7 +265,7 @@ def render(source, output, spec, progress=lambda f: None):
     side = arrow_side(boxes[first][0], (w, h))
     encoder = subprocess.Popen(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'bgr24',
                                 '-s', f'{w}x{h}', '-r', str(fps), '-i', '-', '-i', str(source), '-map', '0:v:0', '-map', '1:a:0?',
-                                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p',
+                                *video_encoder('detail'), '-pix_fmt', 'yuv420p',
                                 '-c:a', 'copy', '-shortest', '-movflags', '+faststart', '-threads', '2', str(output)],
                                stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
     capture = cv2.VideoCapture(str(source))
