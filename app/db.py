@@ -113,6 +113,14 @@ def init():
             assign_legacy_batches(db)
         if 'kind' not in {row['name'] for row in db.execute('PRAGMA table_info(intake_batches)')}:
             db.execute("ALTER TABLE intake_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'performance'")
+        for column in ('held','forced'):
+            if column not in job_columns:
+                db.execute(f'ALTER TABLE jobs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0')
+        yt_columns = {row['name'] for row in db.execute('PRAGMA table_info(youtube_jobs)')}
+        if 'mirror_of' not in yt_columns:
+            db.execute('ALTER TABLE youtube_jobs ADD COLUMN mirror_of INTEGER')
+        if 'forced' not in yt_columns:
+            db.execute('ALTER TABLE youtube_jobs ADD COLUMN forced INTEGER NOT NULL DEFAULT 0')
         if 'post_now_at' not in job_columns:
             db.execute('ALTER TABLE jobs ADD COLUMN post_now_at REAL')
         if 'container_cover_ms' not in job_columns:

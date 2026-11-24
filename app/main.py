@@ -24,7 +24,7 @@ from . import config as c
 from .db import init, connect, settings, secret, event, runtime
 from .planner import plan, conservation, daily_limit, runway_days, KIND_SQL
 from .security import verify_media
-from . import instagram as ig, ai, media, songs, hashtags, notifications as ntfy
+from . import instagram as ig, ai, media, songs, hashtags, youtube, notifications as ntfy
 from .worker import tick, send_post_now
 from .youtube_api import router as youtube_router
 
@@ -175,19 +175,80 @@ def schedule(days: int = None):
         overdue = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status NOT IN ('published','rejected') AND c.disabled=0 AND j.scheduled_at<?",(start.timestamp(),)).fetchone()[0]
         preparing = db.execute("SELECT COUNT(*) FROM clips WHERE disabled=0 AND status IN ('processing','captioning','needs_caption')").fetchone()[0]
         counts = {r['lane']:r['n'] for r in db.execute("SELECT j.lane,COUNT(*) n FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.status IN ('queued','retry') AND c.disabled=0 GROUP BY j.lane")}
+        youtube_rows = [dict(r) for r in db.execute("""SELECT id,kind,source_key,title,status,pinned,manual,forced,mirror_of,error,video_id,
+            CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END AS at FROM youtube_jobs
+            WHERE status IN ('queued','uploading','uploaded','failed')
+            AND CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END>=?
+            AND CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END<? ORDER BY at,id""",(start.timestamp(),end.timestamp()))]
+        youtube_on = bool(db.execute("SELECT 1 FROM youtube_account WHERE id=1").fetchone())
+        mirror_on = youtube.preferences(db).mirror_grid
     interval = conservation(s,counts.get('main',0) if daily_limit(s,'main') else counts.get('trial',0),now)
     calendar = {}
     for offset in range(days):
         local = start + timedelta(days=offset)
         key = local.date().isoformat()
-        calendar[key] = {'date':key,'timestamp':local.timestamp(),'number':offset+1,'main':[],'trial':[]}
+        calendar[key] = {'date':key,'timestamp':local.timestamp(),'number':offset+1,'main':[],'trial':[],'youtube':[]}
     for job in rows:
         key = datetime.fromtimestamp(job['published_at'] or job['scheduled_at'],tz).date().isoformat()
         calendar[key][job['lane']].append(job)
+    for short in youtube_rows:
+        key = datetime.fromtimestamp(short['at'],tz).date().isoformat()
+        if key in calendar:
+            calendar[key]['youtube'].append(short)
     return {'days':list(calendar.values()),'timezone':s['timezone'],'interval':interval,
+            'youtube':{'connected':youtube_on,'mirror':mirror_on},
             'limits':{lane:daily_limit(s,lane,interval) for lane in ('main','trial')},
             'unscheduled':unscheduled,'overdue':overdue,'preparing':preparing,
-            'totals':{lane:sum(r['lane']==lane and r['status']!='published' for r in rows) for lane in ('main','trial')}}
+            'totals':{**{lane:sum(r['lane']==lane and r['status']!='published' for r in rows) for lane in ('main','trial')},
+                      'youtube':sum(r['status']!='uploaded' for r in youtube_rows)}}
+
+class PlaceBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['job','clip','youtube']
+    id: str = Field(min_length=1,max_length=80)
+    lane: Literal['main','trial','youtube']
+    day: str = Field(min_length=10,max_length=10)
+    after: float | None = None
+    before: float | None = None
+
+class HoldBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['job','youtube']
+    id: str = Field(min_length=1,max_length=80)
+
+@app.post('/api/schedule/place')
+def schedule_place(body: PlaceBody):
+    from . import schedule as hand
+    try:
+        at = hand.place(body.kind,body.id,body.lane,body.day,body.after,body.before)
+    except (hand.PlaceError, ValueError) as exc:
+        raise HTTPException(422,str(exc))
+    return {'ok':True,'at':at}
+
+@app.post('/api/schedule/hold')
+def schedule_hold(body: HoldBody):
+    from . import schedule as hand
+    try:
+        hand.hold(body.kind,body.id)
+    except (hand.PlaceError, ValueError) as exc:
+        raise HTTPException(422,str(exc))
+    return {'ok':True}
+
+@app.post('/api/schedule/release')
+def schedule_release(body: HoldBody):
+    from . import schedule as hand
+    try:
+        hand.release(body.kind,body.id)
+    except (hand.PlaceError, ValueError) as exc:
+        raise HTTPException(422,str(exc))
+    return {'ok':True}
+
+@app.get('/api/schedule/tray')
+def schedule_tray(q: str = '', offset: int = 0):
+    from . import schedule as hand
+    if offset < 0 or len(q) > 100:
+        raise HTTPException(422,'Invalid search.')
+    return hand.tray(q,offset)
 
 @app.get('/api/jobs')
 def jobs(status: str='upcoming', lane: str='', offset: int=0, limit: int=100):

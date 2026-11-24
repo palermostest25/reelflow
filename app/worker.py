@@ -58,8 +58,10 @@ def mark_uncertain(job, message):
     ntfy.enqueue('uncertain:'+str(job['id']),message+' Open Reelflow and reconcile this post.')
 
 def publish_limit(db, s, job, now):
+    if job['forced']:
+        return ''  # Placed by hand on this day: it counts on top of the daily target.
     start = datetime.fromtimestamp(now,ZoneInfo(s['timezone'])).replace(hour=0,minute=0,second=0,microsecond=0).timestamp()
-    recent = db.execute("SELECT COUNT(*) FROM jobs WHERE lane=? AND status='published' AND post_now_at IS NULL AND published_at>=?",(job['lane'],start)).fetchone()[0]
+    recent = db.execute("SELECT COUNT(*) FROM jobs WHERE lane=? AND status='published' AND post_now_at IS NULL AND forced=0 AND published_at>=?",(job['lane'],start)).fetchone()[0]
     stock_lane = 'main' if daily_limit(s,'main') else 'trial'
     remaining = db.execute("SELECT COUNT(*) FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane=? AND j.status IN ('queued','retry') AND c.disabled=0",(stock_lane,)).fetchone()[0]
     if recent >= daily_limit(s,job['lane'],conservation(s,remaining,now)):
@@ -239,7 +241,7 @@ def tick():
         s = settings()
         if not s['paused'] and not s['dry_run'] and not c.DEMO:
             with connect() as db:
-                due = [r[0] for r in db.execute("SELECT id FROM jobs WHERE status IN ('queued','retry') AND approved=1 AND scheduled_at<=? AND next_attempt<=? ORDER BY scheduled_at LIMIT 4",(time.time(),time.time()))]
+                due = [r[0] for r in db.execute("SELECT id FROM jobs WHERE status IN ('queued','retry') AND approved=1 AND held=0 AND scheduled_at<=? AND next_attempt<=? ORDER BY scheduled_at LIMIT 4",(time.time(),time.time()))]
             for job_id in due:
                 advance(job_id,time.time())
         ntfy.flush()

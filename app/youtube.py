@@ -43,6 +43,7 @@ class Preferences(BaseModel):
     made_for_kids: bool = False
     category: Literal['10', '22', '24'] = '22'
     description_footer: str = Field(default='', max_length=2000)
+    mirror_grid: bool = True   # Every Instagram grid Reel also goes out as a Short at the same time.
 
 
 class YouTubeError(Exception):
@@ -273,6 +274,50 @@ def plan(db, prefs, now):
             days[date] += 1
 
 
+def mirror(db, now, horizon=30*86400):
+    """Keep a YouTube Short beside every scheduled Instagram grid Reel, at the same time.
+
+    The Short follows its Reel when the planner or a drag moves it. A Short you move yourself stops
+    following. Clips that cannot be Shorts (landscape or over 3 minutes) are skipped.
+    """
+    prefs = preferences(db)
+    connected = db.execute("SELECT 1 FROM youtube_account WHERE id=1 AND error=''").fetchone()
+    stale = "DELETE FROM youtube_jobs WHERE mirror_of IS NOT NULL AND forced=0 AND status IN ('draft','queued') AND uploaded_bytes=0"
+    if not prefs.mirror_grid or not connected:
+        db.execute(stale)
+        return
+    grid = db.execute("""SELECT j.id,j.clip_id,j.caption,j.status,COALESCE(j.published_at,j.scheduled_at) AS at
+        FROM jobs j JOIN clips c ON c.id=j.clip_id WHERE j.lane='main' AND c.disabled=0 AND j.held=0
+        AND j.status IN ('queued','retry','processing','publishing','published')
+        AND COALESCE(j.published_at,j.scheduled_at) BETWEEN ? AND ?""", (now-86400, now+horizon)).fetchall()
+    keep = set()
+    for job in grid:
+        short = db.execute("SELECT * FROM youtube_jobs WHERE kind='short' AND source_key=?", (job['clip_id'],)).fetchone()
+        if short:
+            if short['mirror_of'] == job['id'] and short['status'] in ('draft','queued') and not short['forced']:
+                keep.add(short['id'])
+                if short['scheduled_at'] != job['at'] or short['status'] != 'queued':
+                    db.execute("UPDATE youtube_jobs SET scheduled_at=?,status='queued',pinned=1 WHERE id=?", (job['at'], short['id']))
+            elif short['mirror_of'] == job['id']:
+                keep.add(short['id'])
+            continue  # The clip already has its own YouTube post: never upload it twice.
+        if job['status'] == 'published' and job['at'] < now-3600:
+            continue  # Too late to go out together.
+        clip = db.execute('SELECT * FROM clips WHERE id=?', (job['clip_id'],)).fetchone()
+        if not clip or clip['width'] > clip['height'] or not 0 < clip['duration'] <= 180:
+            continue  # Shorts are square or vertical and up to 3 minutes.
+        try:
+            duration = short_info(clip)
+        except YouTubeError:
+            continue
+        short_id = add_draft(db, prefs, 'short', clip['id'], clip['name'], duration, caption=job['caption'] or clip['caption'], approve=True)
+        db.execute('UPDATE youtube_jobs SET mirror_of=?,pinned=1,scheduled_at=? WHERE id=?', (job['id'], job['at'], short_id))
+        keep.add(short_id)
+    # Shorts whose Reel was rejected, held or removed stop too (unless already uploading).
+    marks = ','.join('?'*len(keep))
+    db.execute(stale + (f' AND id NOT IN ({marks})' if keep else ''), tuple(keep))
+
+
 def session_url(value):
     try:
         url = urlsplit(value)
@@ -409,7 +454,7 @@ def publish_due(now):
             return False
         job = db.execute("""SELECT * FROM youtube_jobs WHERE next_attempt<=? AND (manual=1 OR ?=0)
             AND (status='uploading' OR (status='queued' AND scheduled_at<=?))
-            AND (manual=1 OR status='uploading' OR (kind='short' AND ?>0) OR (kind='set' AND ?>0))
+            AND (manual=1 OR status='uploading' OR mirror_of IS NOT NULL OR forced=1 OR (kind='short' AND ?>0) OR (kind='set' AND ?>0))
             ORDER BY status='uploading' DESC,manual DESC,scheduled_at,id LIMIT 1""",
             (now,prefs.paused,now,prefs.shorts_per_day,prefs.sets_every_days)).fetchone()
         if not job:
