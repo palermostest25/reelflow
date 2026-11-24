@@ -1053,7 +1053,10 @@ def render(shots, cameras, bounce, duration, work, output, args, size=None, wind
             or videos[0]["width"] != width or videos[0]["height"] != height
             or abs(stream_duration(info, videos[0])-length) > 1/args.fps+0.005
             or abs(stream_duration(info, audios[0])-length) > 0.05):
-        raise RuntimeError("Final output failed stream/duration verification")
+        found = ", ".join(f"{x['codec_type']} {x.get('codec_name')} {x.get('width', '')}x{x.get('height', '')} "
+                          f"{stream_duration(info, x):.3f}s" for x in streams)
+        raise RuntimeError(f"Final output failed stream/duration verification: expected {width}x{height} "
+                           f"{CODEC_NAMES[args.codec]} lasting {length:.3f}s, got {found}")
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(assembled), str(output))  # old output is only replaced after successful validation
     shutil.rmtree(folder, ignore_errors=True)
