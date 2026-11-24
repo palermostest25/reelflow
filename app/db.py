@@ -137,6 +137,13 @@ def init():
             db.execute("ALTER TABLE intake_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'performance'")
         if 'collaborators' not in job_columns:
             db.execute("ALTER TABLE jobs ADD COLUMN collaborators TEXT NOT NULL DEFAULT ''")
+        tt_columns = {row['name'] for row in db.execute('PRAGMA table_info(tiktok_jobs)')}
+        for column,kind in (("privacy","TEXT NOT NULL DEFAULT ''"),('allow_comment','INTEGER NOT NULL DEFAULT 0'),
+                            ('allow_duet','INTEGER NOT NULL DEFAULT 0'),('allow_stitch','INTEGER NOT NULL DEFAULT 0'),
+                            ('brand_own','INTEGER NOT NULL DEFAULT 0'),('brand_paid','INTEGER NOT NULL DEFAULT 0'),
+                            ('approved','INTEGER NOT NULL DEFAULT 0'),('approved_at','REAL')):
+            if column not in tt_columns:
+                db.execute(f'ALTER TABLE tiktok_jobs ADD COLUMN {column} {kind}')
         for column in ('held','forced'):
             if column not in job_columns:
                 db.execute(f'ALTER TABLE jobs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0')

@@ -149,3 +149,8 @@
 @media(max-width:1700px){.schedule-lanes.lanes-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:900px){.schedule-lanes.lanes-4{grid-template-columns:1fr}}
 .tiktok-settings{margin-top:28px}.tiktok-app summary{cursor:pointer;font-weight:600;margin:8px 0}
+.tt-creator{display:flex;gap:12px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px;background:var(--surface)}.tt-creator img{width:44px;height:44px;border-radius:50%}.tt-creator div{display:grid}
+.tt-list{list-style:none;padding:0;margin:8px 0;display:grid;gap:6px;max-height:300px;overflow:auto}.tt-list label{display:flex;gap:10px;align-items:center;font-weight:400}.tt-list input{width:auto;margin:0}.tt-list img{width:40px;height:40px;object-fit:cover;border-radius:4px}.tt-list small{display:block;color:var(--muted)}
+.tt-allow{border:0;padding:0;display:flex;flex-wrap:wrap;gap:6px 16px}.tt-allow legend{font-weight:600;margin-bottom:6px;width:100%}.tt-allow label{display:inline-flex;gap:6px;align-items:center;font-weight:400}.tt-allow input{width:auto;margin:0}.tt-allow .help{width:100%;margin:0}
+.tt-check{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:6px 0;font-weight:400}.tt-check input{width:auto;margin-top:3px}.tt-check span{font-size:13px;color:var(--muted)}.tt-check strong{display:block;color:var(--ink)}
+.tiktok-review-cta{border-top:1px solid var(--line);margin-top:14px;padding-top:12px}

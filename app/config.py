@@ -27,6 +27,7 @@ DEFAULTS = {
     'hashtag_groups': [], 'hashtag_new_max': 1,
     'multicam_enabled': False,
     'story_share': 'grid',
+    'legal_name': '', 'legal_email': '', 'legal_updated': '', 'tiktok_verify_file': '', 'tiktok_verify_text': '',
     'collab_enabled': False, 'collab_accounts': [], 'collab_per_post': 3, 'collab_order': 'listed',
     'collab_first_hours': 24, 'collab_gap_hours': 24,
     'caption_avoid_camera': 'guidance', 'caption_unique': True,

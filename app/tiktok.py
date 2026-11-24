@@ -4,8 +4,11 @@ Like YouTube, every Instagram grid Reel can go to TikTok at the same time (on by
 when it moves; posts dragged in by hand keep their own time. Videos are sent as file uploads in
 chunks, so TikTok never needs to fetch from this server.
 
-TikTok restricts apps it has not audited: their posts can only be private (SELF_ONLY), which is the
-default here. Once TikTok approves the app, choose Public in Settings.
+TikTok's Content Sharing Guidelines need the operator to see and confirm every post: the creator's
+nickname, a privacy choice with no preset, interaction toggles that start off, commercial content
+disclosure and the music usage consent. Posts therefore wait for approval in the TikTok review panel
+(several can be approved at once with the same explicit choices). Apps TikTok has not audited can only
+post privately (SELF_ONLY).
 """
 import base64
 import hashlib
@@ -28,13 +31,9 @@ PRIVACY = ('SELF_ONLY', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'PUBLIC_
 
 
 class Preferences(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
+    model_config = ConfigDict(extra='ignore', strict=True)  # Older saved preferences had preset privacy fields.
     paused: bool = True
     mirror_grid: bool = True
-    privacy_level: Literal['SELF_ONLY', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'PUBLIC_TO_EVERYONE'] = 'SELF_ONLY'
-    disable_comment: bool = False
-    disable_duet: bool = False
-    disable_stitch: bool = False
     caption_suffix: str = Field(default='', max_length=300)
 
 
@@ -175,6 +174,57 @@ def mirror(db, now, horizon=30*86400):
     db.execute(stale + (f' AND id NOT IN ({marks})' if keep else ''), tuple(keep))
 
 
+_creator = {'at': 0, 'data': None}
+
+def creator_info(force=False):
+    """The connected creator's nickname, allowed privacy options, disabled interactions and duration limit."""
+    if not force and _creator['data'] and time.time()-_creator['at'] < 60:
+        return _creator['data']
+    token = access_token()
+    with httpx.Client(timeout=30) as client:
+        response = client.post(API+'/post/publish/creator_info/query/', json={},
+                               headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json; charset=UTF-8'})
+    data = response.json() if response.content else {}
+    if response.status_code >= 400 or (data.get('error', {}).get('code') not in (None, 'ok')):
+        raise api_error(response)
+    info = data.get('data', {})
+    clean = {'nickname': str(info.get('creator_nickname') or ''), 'username': str(info.get('creator_username') or ''),
+             'avatar': str(info.get('creator_avatar_url') or ''),
+             'privacy_options': [o for o in info.get('privacy_level_options') or [] if o in PRIVACY],
+             'comment_disabled': bool(info.get('comment_disabled')), 'duet_disabled': bool(info.get('duet_disabled')),
+             'stitch_disabled': bool(info.get('stitch_disabled')),
+             'max_seconds': int(info.get('max_video_post_duration_sec') or 600)}
+    _creator.update(at=time.time(), data=clean)
+    return clean
+
+
+def approve(job_ids, choices):
+    """Record the operator's explicit choices for one or more TikTok posts."""
+    privacy = choices.get('privacy')
+    if privacy not in PRIVACY:
+        raise TikTokError('Choose who can see the post.')
+    own, paid = bool(choices.get('brand_own')), bool(choices.get('brand_paid'))
+    disclose = bool(choices.get('disclose'))
+    if disclose and not (own or paid):
+        raise TikTokError('Choose Your brand, Branded content, or both, or turn off disclosure.')
+    if disclose and paid and privacy == 'SELF_ONLY':
+        raise TikTokError('Branded content can’t be private. Choose a wider audience.')
+    info = creator_info()
+    if info['privacy_options'] and privacy not in info['privacy_options']:
+        raise TikTokError('That audience isn’t available for this account right now.')
+    with connect(True) as db:
+        for job_id in job_ids:
+            caption_text = choices.get('caption') if len(job_ids) == 1 and isinstance(choices.get('caption'), str) else None
+            db.execute("""UPDATE tiktok_jobs SET privacy=?,allow_comment=?,allow_duet=?,allow_stitch=?,brand_own=?,brand_paid=?,
+                approved=1,approved_at=?,caption=COALESCE(?,caption) WHERE id=? AND status IN ('queued','draft','failed')""",
+                       (privacy, int(bool(choices.get('comment')) and not info['comment_disabled']),
+                        int(bool(choices.get('duet')) and not info['duet_disabled']),
+                        int(bool(choices.get('stitch')) and not info['stitch_disabled']),
+                        int(disclose and own), int(disclose and paid), time.time(),
+                        caption_text[:2200] if caption_text is not None else None, job_id))
+        event(f'Approved {len(job_ids)} TikTok post{"s" if len(job_ids) != 1 else ""} for @{info["username"] or info["nickname"]}.', db=db)
+
+
 def chunks(size):
     """TikTok's rules: up to 64 MB goes whole; larger files go in 64 MB pieces, the last one taking the rest."""
     if size <= MAX_CHUNK:
@@ -192,9 +242,10 @@ def start_upload(job, prefs, token):
         raise TikTokError('The clip export is missing. Rebuild it in the Footage library.')
     size = path.stat().st_size
     chunk, count = chunks(size)
-    body = {'post_info': {'title': caption(prefs, job['caption']), 'privacy_level': prefs.privacy_level,
-                          'disable_comment': prefs.disable_comment, 'disable_duet': prefs.disable_duet,
-                          'disable_stitch': prefs.disable_stitch},
+    body = {'post_info': {'title': caption(prefs, job['caption']), 'privacy_level': job['privacy'],
+                          'disable_comment': not job['allow_comment'], 'disable_duet': not job['allow_duet'],
+                          'disable_stitch': not job['allow_stitch'],
+                          'brand_organic_toggle': bool(job['brand_own']), 'brand_content_toggle': bool(job['brand_paid'])},
             'source_info': {'source': 'FILE_UPLOAD', 'video_size': size, 'chunk_size': chunk, 'total_chunk_count': count}}
     with httpx.Client(timeout=60) as client:
         response = client.post(API+'/post/publish/video/init/', json=body,
@@ -237,7 +288,7 @@ def publish_due(now=None):
         if not account or account['error'] or c.DEMO:
             return False
         job = db.execute("""SELECT * FROM tiktok_jobs WHERE next_attempt<=? AND (status='processing'
-            OR (status='queued' AND scheduled_at<=? AND (?=0 OR forced=1))) ORDER BY status='processing' DESC,scheduled_at LIMIT 1""",
+            OR (status='queued' AND approved=1 AND scheduled_at<=? AND (?=0 OR forced=1))) ORDER BY status='processing' DESC,scheduled_at LIMIT 1""",
                          (now, now, int(prefs.paused))).fetchone()
     if not job:
         return False
@@ -249,6 +300,13 @@ def publish_due(now=None):
                 clip = db.execute('SELECT status,disabled FROM clips WHERE id=?', (job['clip_id'],)).fetchone()
             if not clip or clip['disabled'] or clip['status'] != 'ready':
                 raise TikTokError('The footage is excluded or not ready. Review it before retrying.')
+            info = creator_info(force=True)
+            with connect() as db:
+                duration = db.execute('SELECT duration FROM clips WHERE id=?', (job['clip_id'],)).fetchone()[0]
+            if duration > info['max_seconds']:
+                raise TikTokError(f'This account can post videos up to {info["max_seconds"]} seconds on TikTok.')
+            if info['privacy_options'] and job['privacy'] not in info['privacy_options']:
+                raise TikTokError('The chosen audience is no longer available for this account. Approve the post again.')
             publish_id = start_upload(dict(job), prefs, token)
             update = {'status': 'processing', 'publish_id': publish_id, 'next_attempt': now+20, 'error': ''}
         else:
@@ -256,7 +314,7 @@ def publish_due(now=None):
             if status == 'PUBLISH_COMPLETE':
                 update = {'status': 'published', 'post_id': post_id, 'published_at': now, 'error': ''}
                 with connect(True) as db:
-                    event('Posted to TikTok.', db=db)
+                    event('Posted to TikTok. It can take a few minutes to process before it shows on your profile.', db=db)
             elif status == 'FAILED':
                 raise TikTokError('TikTok could not publish this video' + (f': {reason}' if reason else '.'))
             elif status == 'SEND_TO_USER_INBOX':
@@ -283,5 +341,6 @@ def state():
     with connect() as db:
         account = db.execute('SELECT display_name,expires_at,refresh_expires_at,error FROM tiktok_account WHERE id=1').fetchone()
         counts = dict(db.execute('SELECT status,COUNT(*) FROM tiktok_jobs GROUP BY status').fetchall())
+        counts['waiting'] = db.execute("SELECT COUNT(*) FROM tiktok_jobs WHERE approved=0 AND status IN ('queued','failed')").fetchone()[0]
         return {'app': bool(app_keys(db).get('client_key')), 'account': dict(account) if account else None,
                 'preferences': preferences(db).model_dump(), 'counts': counts, 'redirect_uri': redirect_uri()}

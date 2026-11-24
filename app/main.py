@@ -51,7 +51,8 @@ app.include_router(youtube_router)
 @app.middleware('http')
 async def guard(request: Request, call_next):
     path = request.url.path
-    public = path=='/' or path=='/healthz' or path.startswith('/static/') or path=='/api/login' or path.startswith('/media/')
+    public = (path=='/' or path=='/healthz' or path.startswith('/static/') or path=='/api/login' or path.startswith('/media/')
+              or path in ('/about','/legal/terms','/legal/privacy') or re.fullmatch(r'/tiktok[A-Za-z0-9_-]{1,80}\.txt',path))
     if not public:
         if c.DEMO:
             if request.client.host not in ('127.0.0.1','::1','testclient'):
@@ -181,7 +182,7 @@ def schedule(days: int = None):
             AND CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END>=?
             AND CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END<? ORDER BY at,id""",(start.timestamp(),end.timestamp()))]
         youtube_on = bool(db.execute("SELECT 1 FROM youtube_account WHERE id=1").fetchone())
-        tiktok_rows = [dict(r) for r in db.execute("""SELECT t.id,t.clip_id,c.name AS title,t.status,t.forced,t.mirror_of,t.error,
+        tiktok_rows = [dict(r) for r in db.execute("""SELECT t.id,t.clip_id,c.name AS title,t.status,t.forced,t.mirror_of,t.error,t.approved,
             COALESCE(t.published_at,t.scheduled_at) AS at FROM tiktok_jobs t JOIN clips c ON c.id=t.clip_id
             WHERE t.status IN ('queued','processing','published','failed') AND COALESCE(t.published_at,t.scheduled_at)>=?
             AND COALESCE(t.published_at,t.scheduled_at)<? ORDER BY at,t.id""",(start.timestamp(),end.timestamp()))]
@@ -385,6 +386,12 @@ def update_settings(body: SettingsPatch):
         collab.validate(s)
     except ValueError as exc:
         raise HTTPException(422,str(exc))
+    s['legal_email'] = s['legal_email'].strip()
+    if s['legal_email'] and not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',s['legal_email']):
+        raise HTTPException(422,'Enter a valid contact email for the public pages.')
+    if s['tiktok_verify_file'] and not re.fullmatch(r'tiktok[A-Za-z0-9_-]{1,80}\.txt',s['tiktok_verify_file'].strip()):
+        raise HTTPException(422,'The TikTok verification file name looks like tiktokXXXX.txt.')
+    s['tiktok_verify_file'] = s['tiktok_verify_file'].strip()
     if s['story_share'] not in ('off','grid','all'):
         raise HTTPException(422,'Choose which Reels are shared to Stories.')
     if s['gpu_mode'] not in ('auto','off'):
@@ -1080,6 +1087,65 @@ def tiktok_callback(request: Request, code: str='', state: str='', error: str=''
         raise HTTPException(502,str(exc))
     plan()
     return RedirectResponse('/#settings',303)
+
+@app.get('/about',response_class=HTMLResponse)
+def about_page():
+    from . import legal
+    return legal.about()
+
+@app.get('/legal/terms',response_class=HTMLResponse)
+def terms_page():
+    from . import legal
+    return legal.terms()
+
+@app.get('/legal/privacy',response_class=HTMLResponse)
+def privacy_page():
+    from . import legal
+    return legal.privacy()
+
+@app.get('/{name}.txt',response_class=Response)
+def tiktok_verification(name: str):
+    """TikTok's URL-prefix ownership check: serve the signature file it asks for at the site root."""
+    s = settings()
+    if not re.fullmatch(r'tiktok[A-Za-z0-9_-]{1,80}',name) or s['tiktok_verify_file'] != name+'.txt' or not s['tiktok_verify_text']:
+        raise HTTPException(404)
+    return Response(s['tiktok_verify_text'],media_type='text/plain')
+
+class TikTokApproval(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ids: list[int] = Field(min_length=1,max_length=500)
+    privacy: str
+    comment: bool = False
+    duet: bool = False
+    stitch: bool = False
+    disclose: bool = False
+    brand_own: bool = False
+    brand_paid: bool = False
+    caption: str | None = Field(default=None,max_length=2200)
+
+@app.get('/api/tiktok/creator')
+def tiktok_creator():
+    from . import tiktok
+    try:
+        return tiktok.creator_info(force=True)
+    except tiktok.TikTokError as exc:
+        raise HTTPException(502,str(exc))
+
+@app.get('/api/tiktok/pending')
+def tiktok_pending():
+    with connect() as db:
+        return {'posts':[dict(r) for r in db.execute("""SELECT t.id,t.clip_id,t.caption,t.scheduled_at,t.approved,t.privacy,t.allow_comment,
+            t.allow_duet,t.allow_stitch,t.brand_own,t.brand_paid,c.name,c.duration FROM tiktok_jobs t JOIN clips c ON c.id=t.clip_id
+            WHERE t.status IN ('queued','failed') ORDER BY t.approved,t.scheduled_at""")]}
+
+@app.post('/api/tiktok/approve')
+def tiktok_approve(body: TikTokApproval):
+    from . import tiktok
+    try:
+        tiktok.approve(body.ids,body.model_dump())
+    except tiktok.TikTokError as exc:
+        raise HTTPException(422,str(exc))
+    return {'ok':True}
 
 @app.get('/api/collaborators')
 def collaborators():
