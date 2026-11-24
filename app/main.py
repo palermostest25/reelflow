@@ -181,39 +181,46 @@ def schedule(days: int = None):
             AND CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END>=?
             AND CASE WHEN status='uploaded' THEN uploaded_at ELSE scheduled_at END<? ORDER BY at,id""",(start.timestamp(),end.timestamp()))]
         youtube_on = bool(db.execute("SELECT 1 FROM youtube_account WHERE id=1").fetchone())
+        tiktok_rows = [dict(r) for r in db.execute("""SELECT t.id,t.clip_id,c.name AS title,t.status,t.forced,t.mirror_of,t.error,
+            COALESCE(t.published_at,t.scheduled_at) AS at FROM tiktok_jobs t JOIN clips c ON c.id=t.clip_id
+            WHERE t.status IN ('queued','processing','published','failed') AND COALESCE(t.published_at,t.scheduled_at)>=?
+            AND COALESCE(t.published_at,t.scheduled_at)<? ORDER BY at,t.id""",(start.timestamp(),end.timestamp()))]
+        tiktok_on = bool(db.execute("SELECT 1 FROM tiktok_account WHERE id=1").fetchone())
         mirror_on = youtube.preferences(db).mirror_grid
     interval = conservation(s,counts.get('main',0) if daily_limit(s,'main') else counts.get('trial',0),now)
     calendar = {}
     for offset in range(days):
         local = start + timedelta(days=offset)
         key = local.date().isoformat()
-        calendar[key] = {'date':key,'timestamp':local.timestamp(),'number':offset+1,'main':[],'trial':[],'youtube':[]}
+        calendar[key] = {'date':key,'timestamp':local.timestamp(),'number':offset+1,'main':[],'trial':[],'youtube':[],'tiktok':[]}
     for job in rows:
         key = datetime.fromtimestamp(job['published_at'] or job['scheduled_at'],tz).date().isoformat()
         calendar[key][job['lane']].append(job)
-    for short in youtube_rows:
-        key = datetime.fromtimestamp(short['at'],tz).date().isoformat()
-        if key in calendar:
-            calendar[key]['youtube'].append(short)
+    for lane, items in (('youtube',youtube_rows),('tiktok',tiktok_rows)):
+        for item in items:
+            key = datetime.fromtimestamp(item['at'],tz).date().isoformat()
+            if key in calendar:
+                calendar[key][lane].append(item)
     return {'days':list(calendar.values()),'timezone':s['timezone'],'interval':interval,
-            'youtube':{'connected':youtube_on,'mirror':mirror_on},
+            'youtube':{'connected':youtube_on,'mirror':mirror_on},'tiktok':{'connected':tiktok_on},
             'limits':{lane:daily_limit(s,lane,interval) for lane in ('main','trial')},
             'unscheduled':unscheduled,'overdue':overdue,'preparing':preparing,
             'totals':{**{lane:sum(r['lane']==lane and r['status']!='published' for r in rows) for lane in ('main','trial')},
-                      'youtube':sum(r['status']!='uploaded' for r in youtube_rows)}}
+                      'youtube':sum(r['status']!='uploaded' for r in youtube_rows),
+                      'tiktok':sum(r['status']!='published' for r in tiktok_rows)}}
 
 class PlaceBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    kind: Literal['job','clip','youtube']
+    kind: Literal['job','clip','youtube','tiktok']
     id: str = Field(min_length=1,max_length=80)
-    lane: Literal['main','trial','youtube']
+    lane: Literal['main','trial','youtube','tiktok']
     day: str = Field(min_length=10,max_length=10)
     after: float | None = None
     before: float | None = None
 
 class HoldBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    kind: Literal['job','youtube']
+    kind: Literal['job','youtube','tiktok']
     id: str = Field(min_length=1,max_length=80)
 
 @app.post('/api/schedule/place')
@@ -1005,6 +1012,73 @@ def instagram_callback(request: Request, code: str='', state: str=''):
             ig.connect_account(code)
     except ig.MetaError as exc:
         raise HTTPException(502,str(exc))
+    return RedirectResponse('/#settings',303)
+
+class TikTokApp(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    client_key: str = Field(min_length=4,max_length=100,pattern=r'^[A-Za-z0-9_-]+$')
+    client_secret: str = Field(min_length=8,max_length=200)
+
+@app.get('/api/tiktok')
+def tiktok_state():
+    from . import tiktok
+    return tiktok.state()
+
+@app.put('/api/tiktok/app')
+def tiktok_app(body: TikTokApp):
+    from . import tiktok
+    secret('tiktok_app',json.dumps({'client_key':body.client_key.strip(),'client_secret':body.client_secret.strip()}))
+    return tiktok.state()
+
+@app.put('/api/tiktok/preferences')
+def tiktok_preferences(body: dict):
+    from . import tiktok
+    try:
+        prefs = tiktok.Preferences.model_validate(body)
+    except Exception:
+        raise HTTPException(422,'Check the TikTok settings.')
+    with connect(True) as db:
+        tiktok.save_preferences(db,prefs)
+    plan()
+    return tiktok.state()
+
+@app.post('/api/tiktok/disconnect')
+def tiktok_disconnect():
+    from . import tiktok
+    tiktok.disconnect()
+    plan()
+    return tiktok.state()
+
+@app.get('/auth/tiktok/start')
+def tiktok_start(request: Request):
+    from . import tiktok
+    keys = tiktok.app_keys()
+    if c.DEMO or not keys.get('client_key'):
+        raise HTTPException(409,'Save your TikTok app’s client key and secret in Settings first.')
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(48)
+    request.session['tt_state'] = state
+    request.session['tt_at'] = time.time()
+    secret('tt_verifier:'+state,verifier)
+    return RedirectResponse(tiktok.authorization_url(keys['client_key'],state,verifier))
+
+@app.get('/auth/tiktok/callback')
+def tiktok_callback(request: Request, code: str='', state: str='', error: str=''):
+    from . import tiktok
+    expected = request.session.pop('tt_state','')
+    started = request.session.pop('tt_at',0)
+    if not expected or not hmac.compare_digest(state,expected) or time.time()-started>600:
+        raise HTTPException(403,'TikTok sign-in expired. Start again from Settings.')
+    verifier = secret('tt_verifier:'+state)
+    with connect(True) as db:
+        db.execute('DELETE FROM secrets WHERE name=?',('tt_verifier:'+state,))
+    if error or not code:
+        raise HTTPException(400,'TikTok sign-in was cancelled.')
+    try:
+        tiktok.connect_account(code,verifier)
+    except tiktok.TikTokError as exc:
+        raise HTTPException(502,str(exc))
+    plan()
     return RedirectResponse('/#settings',303)
 
 @app.get('/api/collaborators')

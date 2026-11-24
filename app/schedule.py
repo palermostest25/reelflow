@@ -7,11 +7,11 @@ post takes it out of the schedule until it is placed again (or released back to 
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from . import media, youtube as yt
+from . import media, youtube as yt, tiktok as tt
 from .db import connect, settings, event
 from .planner import plan
 
-LANES = ('main', 'trial', 'youtube')
+LANES = ('main', 'trial', 'youtube', 'tiktok')
 GAP = 90*60
 EDITABLE = ('queued', 'retry', 'failed')
 
@@ -40,7 +40,7 @@ def place_time(s, lane, day, after=None, before=None, now=None, short_hour=17):
     elif before:
         at = before - GAP if before - GAP >= first.timestamp() else (before + first.timestamp()) / 2
     else:
-        hour = short_hour if lane == 'youtube' else s['schedule_hours'][date.weekday()] if lane == 'main' \
+        hour = short_hour if lane in ('youtube', 'tiktok') else s['schedule_hours'][date.weekday()] if lane == 'main' \
             else (s['posting_start_hour'] + s['posting_end_hour']) / 2
         at = (start + timedelta(minutes=round(hour*60))).timestamp()
     at = round(at / 300) * 300  # Five-minute steps read well in the schedule.
@@ -92,6 +92,17 @@ def youtube_short(db, clip, at):
     return short_id
 
 
+def tiktok_post(db, clip, at):
+    post = db.execute('SELECT * FROM tiktok_jobs WHERE clip_id=?', (clip['id'],)).fetchone()
+    if post and post['status'] in ('published', 'processing'):
+        raise PlaceError('This clip is already on TikTok.')
+    if not 3 <= (clip['duration'] or 0) <= 600:
+        raise PlaceError('TikTok takes videos from 3 seconds to 10 minutes.')
+    post_id = post['id'] if post else tt.add_job(db, clip, at, forced=True)
+    db.execute("UPDATE tiktok_jobs SET scheduled_at=?,status='queued',pinned=1,forced=1,mirror_of=NULL,error='',attempts=0,next_attempt=0 WHERE id=?",
+               (at, post_id))
+
+
 def place(kind, item, lane, day, after=None, before=None, now=None):
     """Put a post (or a clip from the footage library) on a day in a destination."""
     if lane not in LANES:
@@ -122,6 +133,11 @@ def place(kind, item, lane, day, after=None, before=None, now=None):
             if short['kind'] != 'short':
                 raise PlaceError('Full sets only go to YouTube.')
             clip_id = short['source_key']
+        elif kind == 'tiktok':
+            post = db.execute('SELECT * FROM tiktok_jobs WHERE id=?', (int(item),)).fetchone()
+            if not post:
+                raise PlaceError('TikTok post not found.')
+            clip_id = post['clip_id']
         elif kind == 'clip':
             clip_id = str(item)
         else:
@@ -132,6 +148,8 @@ def place(kind, item, lane, day, after=None, before=None, now=None):
         if lane == 'youtube':
             youtube_short(db, clip, at)
             yt.plan(db, prefs, now)
+        elif lane == 'tiktok':
+            tiktok_post(db, clip, at)
         else:
             if source_job is not None and source_job['lane'] == lane:
                 if source_job['status'] not in EDITABLE:
@@ -144,7 +162,7 @@ def place(kind, item, lane, day, after=None, before=None, now=None):
                     db.execute('UPDATE jobs SET held=1,pinned=0,forced=0,scheduled_at=NULL WHERE id=?', (source_job['id'],))
             schedule_job(db, job_id, at)
         event(f'{clip["name"]} placed by hand for ' + datetime.fromtimestamp(at, ZoneInfo(s['timezone'])).strftime('%a %-d %b %H:%M')
-              + {'main': ' (grid)', 'trial': ' (Trial)', 'youtube': ' (YouTube)'}[lane] + '.', db=db)
+              + {'main': ' (grid)', 'trial': ' (Trial)', 'youtube': ' (YouTube)', 'tiktok': ' (TikTok)'}[lane] + '.', db=db)
     plan(now)
     return at
 
@@ -160,6 +178,10 @@ def hold(kind, item):
             if db.execute("""UPDATE youtube_jobs SET status='draft',pinned=0,forced=0,mirror_of=NULL,scheduled_at=NULL
                 WHERE id=? AND status IN ('queued','failed','draft')""", (int(item),)).rowcount != 1:
                 raise PlaceError('Only upcoming YouTube posts can be held.')
+        elif kind == 'tiktok':
+            if db.execute("""UPDATE tiktok_jobs SET status='draft',forced=0,mirror_of=NULL,scheduled_at=NULL
+                WHERE id=? AND status IN ('queued','failed','draft')""", (int(item),)).rowcount != 1:
+                raise PlaceError('Only upcoming TikTok posts can be held.')
         else:
             raise PlaceError('Unknown item.')
         event('Post put on hold.', db=db)
@@ -174,6 +196,8 @@ def release(kind, item):
         elif kind == 'youtube':
             db.execute("UPDATE youtube_jobs SET status='queued',pinned=0,forced=0 WHERE id=? AND status='draft'", (int(item),))
             yt.plan(db, yt.preferences(db), time.time())
+        elif kind == 'tiktok':
+            raise PlaceError('Drag a held TikTok post onto a day to schedule it.')
         else:
             raise PlaceError('Unknown item.')
     plan()
@@ -187,11 +211,15 @@ def tray(query='', offset=0, limit=40):
             ORDER BY j.id DESC LIMIT 100""")]
         drafts = [dict(r) for r in db.execute("""SELECT id,kind,source_key,title,status FROM youtube_jobs
             WHERE status='draft' ORDER BY created_at DESC LIMIT 100""")]
+        drafts += [{'id': r['id'], 'kind': 'tiktok', 'source_key': r['clip_id'], 'title': r['name'], 'status': 'draft'}
+                   for r in db.execute("""SELECT t.id,t.clip_id,c.name FROM tiktok_jobs t JOIN clips c ON c.id=t.clip_id
+                       WHERE t.status='draft' ORDER BY t.created_at DESC LIMIT 100""")]
         like = '%' + query.strip().replace('%', '') + '%'
         clips = [dict(r) for r in db.execute("""SELECT c.id,c.name,c.duration,c.width,c.height,c.caption,
             (SELECT status FROM jobs WHERE clip_id=c.id AND lane='main') AS main,
             (SELECT status FROM jobs WHERE clip_id=c.id AND lane='trial') AS trial,
-            (SELECT status FROM youtube_jobs WHERE kind='short' AND source_key=c.id) AS youtube
+            (SELECT status FROM youtube_jobs WHERE kind='short' AND source_key=c.id) AS youtube,
+            (SELECT status FROM tiktok_jobs WHERE clip_id=c.id) AS tiktok
             FROM clips c WHERE c.status='ready' AND c.disabled=0 AND c.name LIKE ?
             ORDER BY (SELECT COUNT(*) FROM jobs WHERE clip_id=c.id AND status='published'), c.created_at DESC
             LIMIT ? OFFSET ?""", (like, limit, offset))]

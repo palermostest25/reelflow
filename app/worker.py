@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from . import config as c
 from .db import init, connect, settings, event, runtime
-from . import media, ai, songs, collab, stories, instagram as ig, notifications as ntfy
+from . import media, ai, songs, collab, stories, tiktok, instagram as ig, notifications as ntfy
 from .planner import plan, daily_limit, conservation
 from .security import media_url
 
@@ -243,6 +243,7 @@ def tick():
             collab.accept_due()
             collab.refresh_tokens()
             stories.share_due()
+            tiktok.publish_due()
         except Exception:
             log.warning('Collaborator acceptance skipped this pass.')
         media.scan()

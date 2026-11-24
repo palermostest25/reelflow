@@ -144,3 +144,8 @@
 #collab-section label.collab-auto{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:400;margin:0}
 #collab-section label.collab-auto input{width:auto;margin:0;accent-color:var(--accent)}
 .collab-add{display:flex;gap:8px;margin-bottom:12px}.collab-add input{flex:1}
+.lane.tiktok{background:#1f1f1f;color:#fff}
+.schedule-lanes.lanes-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:1700px){.schedule-lanes.lanes-4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.schedule-lanes.lanes-4{grid-template-columns:1fr}}
+.tiktok-settings{margin-top:28px}.tiktok-app summary{cursor:pointer;font-weight:600;margin:8px 0}

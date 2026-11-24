@@ -81,6 +81,16 @@ CREATE TABLE IF NOT EXISTS story_posts (
  job_id INTEGER PRIMARY KEY, clip_id TEXT NOT NULL, status TEXT NOT NULL, container_id TEXT, media_id TEXT,
  attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tiktok_account (
+ id INTEGER PRIMARY KEY CHECK(id=1), open_id TEXT NOT NULL, display_name TEXT, expires_at REAL NOT NULL,
+ refresh_expires_at REAL NOT NULL, error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS tiktok_jobs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, clip_id TEXT NOT NULL UNIQUE, caption TEXT NOT NULL DEFAULT '', status TEXT NOT NULL,
+ scheduled_at REAL, pinned INTEGER NOT NULL DEFAULT 1, forced INTEGER NOT NULL DEFAULT 0, mirror_of INTEGER,
+ publish_id TEXT, post_id TEXT, published_at REAL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
+ error TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS youtube_short_checks (clip_id TEXT PRIMARY KEY REFERENCES clips(id));
 '''
 

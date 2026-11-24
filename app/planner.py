@@ -1,5 +1,6 @@
 """Durable two-lane planner. Replans only unpinned pending jobs."""
 import hashlib
+import importlib
 import math
 import re
 import time
@@ -264,10 +265,10 @@ def plan(now=None):
                     db.execute('UPDATE jobs SET reason=? WHERE id=?',('Its posting window ended '+m['not_after'].strftime('%-d %b')+'. Change the dates or exclude the clip.',j['id']))
                 elif m['not_before'] or m['not_after']:
                     db.execute('UPDATE jobs SET reason=? WHERE id=?',('Waiting for a free slot in its posting window.',j['id']))
-        try:
-            from .youtube import mirror
-            mirror(db, now)
-        except Exception:
-            pass  # YouTube mirroring never holds up the Instagram plan.
+        for module in ('youtube', 'tiktok'):
+            try:
+                importlib.import_module('.'+module, __package__).mirror(db, now)
+            except Exception:
+                pass  # Mirroring never holds up the Instagram plan.
         return {'interval': interval, 'main_remaining': main_count, 'stock_remaining': stock_count,
                 'runway_days': runway_days(s, main_count, trial_count, interval), 'drought_target_days': max(0, (datetime.fromisoformat(s['drought_until']).date() - datetime.fromtimestamp(now,tz).date()).days) if s['drought_until'] else 0}

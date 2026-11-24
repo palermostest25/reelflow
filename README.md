@@ -97,6 +97,18 @@ Reelflow fingerprints the audio of every prepared clip (a few per worker pass) a
 
 Use **Not posted yet**, **Already posted** and **Same song** in the Footage library to filter. Each clip's drawer lists its posting history with Instagram links and the clips it matches, with percentages.
 
+### TikTok
+
+**Settings → TikTok** posts to TikTok alongside Instagram.
+
+1. Create an app at developers.tiktok.com with **Login Kit** and the **Content Posting API** (Direct Post), scopes `user.info.basic` and `video.publish`, and the redirect URI Reelflow shows (`https://your-address/auth/tiktok/callback`).
+2. Paste its client key and secret into Settings → TikTok and press **Save TikTok app**. They are stored encrypted.
+3. Press **Connect TikTok** and sign in. Then turn off **Pause TikTok posting** when you're ready.
+
+**Post every grid Reel to TikTok too** (on by default) sends each Instagram grid Reel to TikTok at the same time, with its caption plus anything in **Add to every TikTok caption**, and follows it when it moves. TikTok has its own column in the By day schedule: drag posts there, between days, or onto On hold like any other. Videos go up as chunked file uploads, so TikTok never has to fetch from your server. Access tokens last a day and refresh automatically.
+
+**TikTok keeps posts from apps it hasn't audited private**, so **Who can see posts** starts at **Only me**. Apply for an audit in the TikTok developer portal; once approved, choose **Everyone**. Refusals show TikTok's error code (for example `unaudited_client_can_only_post_to_private_accounts`). TikTok takes videos from 3 seconds to 10 minutes. This was written against TikTok's documented Content Posting API and tested against a stand-in, not a live TikTok account.
+
 ### Collaborators
 
 **Settings → Collaborators** invites your other Instagram accounts as collaborators on every grid Reel (Trials never get collaborators: they are meant for non-followers). Add usernames, put them in order, and choose:
