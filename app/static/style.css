@@ -137,3 +137,10 @@
 .drag-ghost{max-width:280px;white-space:nowrap}.drag-ghost span{overflow:hidden;text-overflow:ellipsis;font-weight:600}
 @media(max-width:900px){.schedule-tray{position:static}}
 .draggable img{-webkit-user-drag:none;user-select:none}
+.collab-list{list-style:none;padding:0;margin:10px 0;display:grid;gap:6px}
+.collab-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--surface)}
+.collab-move{display:inline-flex;gap:2px}.collab-move .icon-button{width:26px;height:26px;font-size:14px}
+.collab-name{font-weight:600;flex:1;min-width:90px}
+#collab-section label.collab-auto{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:400;margin:0}
+#collab-section label.collab-auto input{width:auto;margin:0;accent-color:var(--accent)}
+.collab-add{display:flex;gap:8px;margin-bottom:12px}.collab-add input{flex:1}

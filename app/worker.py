@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from . import config as c
 from .db import init, connect, settings, event, runtime
-from . import media, ai, songs, instagram as ig, notifications as ntfy
+from . import media, ai, songs, collab, stories, instagram as ig, notifications as ntfy
 from .planner import plan, daily_limit, conservation
 from .security import media_url
 
@@ -36,6 +36,13 @@ def finish(job, media_id=None):
         if media_id:
             db.execute("INSERT OR IGNORE INTO history(media_id,caption,media_type,timestamp,origin,lane) VALUES(?,?,'REELS',?,'reelflow',?)",(media_id,job['caption'],now,job['lane']))
         event('Published '+job['lane']+' Reel.',job_id=job['id'],db=db)
+        invited = [u for u in (db.execute('SELECT collaborators FROM jobs WHERE id=?',(job['id'],)).fetchone()[0] or '').split(',') if u]
+        stories.queue(db,job,media_id)
+    if media_id and invited:
+        try:
+            collab.schedule_accepts(job['id'],media_id,invited,now)
+        except Exception:
+            log.warning('Collaborator acceptance could not be scheduled.')
     if manual:
         try:
             plan(now)
@@ -123,9 +130,13 @@ def advance(job_id, now, *, manual_only=False):
                 job['container_id'] = None
             if not job['container_id']:
                 db.execute("UPDATE jobs SET status='processing' WHERE id=?",(job_id,))
+                if job['lane']=='main' and not job['collaborators']:
+                    # Chosen once per post, so a retried container invites the same accounts.
+                    job['collaborators'] = ','.join(collab.pick(settings(db),db))
+                    db.execute('UPDATE jobs SET collaborators=? WHERE id=?',(job['collaborators'],job_id))
         if not job['container_id']:
             # Safe to retry container creation after a lost response: it does not publish.
-            container_id = ig.create_container(account['ig_id'],job,media_url(job['clip_id']))
+            container_id = ig.create_container(account['ig_id'],{**job,'collaborators':[u for u in job['collaborators'].split(',') if u]},media_url(job['clip_id']))
             with connect(True) as db:
                 db.execute('UPDATE jobs SET container_id=?,container_cover_ms=? WHERE id=?',(container_id,job['cover_ms'],job_id))
         else:
@@ -228,6 +239,12 @@ def tick():
                 except Exception:
                     runtime('account_retry_at',time.time()+1800)
                     ntfy.enqueue('sync:'+time.strftime('%Y-%m-%d'),'Instagram sync failed. Check connection and permissions in Reelflow.')
+        try:
+            collab.accept_due()
+            collab.refresh_tokens()
+            stories.share_due()
+        except Exception:
+            log.warning('Collaborator acceptance skipped this pass.')
         media.scan()
         if settings()['cover_mode']!='instagram':
             media.backfill_covers()

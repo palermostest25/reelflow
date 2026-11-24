@@ -41,7 +41,8 @@ def request(method, path, token=None, **kwargs):
         raise MetaError(message, code, response.status_code>=500 or response.status_code==429 or error.get('is_transient',False))
     return data
 
-def connect_account(code):
+def exchange(code):
+    """Swap a login code for a long-lived token and the account it belongs to."""
     with httpx.Client(timeout=45) as client:
         response = client.post('https://api.instagram.com/oauth/access_token',data={
             'client_id':c.META_ID,'client_secret':c.META_SECRET,'grant_type':'authorization_code',
@@ -61,20 +62,25 @@ def connect_account(code):
             raise MetaError('Could not obtain a long-lived Instagram token.')
         long = response.json()
     profile = request('GET','me',token=long['access_token'],params={'fields':'user_id,username'})
-    ig_id = str(profile.get('user_id') or profile.get('id') or short['user_id'])
+    return {'token':long['access_token'],'expires_at':time.time()+long.get('expires_in',5184000),
+            'ig_id':str(profile.get('user_id') or profile.get('id') or short['user_id']),'username':profile['username']}
+
+def connect_account(code):
+    login = exchange(code)
+    ig_id = login['ig_id']
     with connect() as db:
         old = db.execute('SELECT ig_id FROM account WHERE id=1').fetchone()
     if old and old['ig_id'] != ig_id:
         raise MetaError('A different account is connected. Disconnect it first to keep queues and voice history separate.')
-    secret('instagram_token',long['access_token'])
+    secret('instagram_token',login['token'])
     with connect(True) as db:
         db.execute('INSERT OR REPLACE INTO account(id,ig_id,username,expires_at) VALUES(1,?,?,?)',
-                   (ig_id,profile['username'],time.time()+long.get('expires_in',5184000)))
+                   (ig_id,login['username'],login['expires_at']))
         current = settings(db)
         if not old and current['brand_name']==c.DEFAULTS['brand_name']:
-            current['brand_name'] = profile['username']
+            current['brand_name'] = login['username']
             db.execute('UPDATE settings SET value=? WHERE id=1',(json.dumps(current),))
-    event('Connected Instagram @'+profile['username']+'. Previous captions will import on the next worker pass.')
+    event('Connected Instagram @'+login['username']+'. Previous captions will import on the next worker pass.')
 
 def refresh_token():
     with connect() as db:
@@ -138,6 +144,8 @@ def create_container(account_id, job, url):
         body['thumb_offset'] = job['cover_ms']
     if job['lane']=='trial':
         body['trial_params'] = {'graduation_strategy':'MANUAL'}
+    elif job.get('collaborators'):
+        body['collaborators'] = job['collaborators']
     return request('POST',account_id+'/media',json=body)['id']
 
 def container_status(container_id):

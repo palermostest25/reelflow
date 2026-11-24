@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS multicam_jobs (
  stage TEXT NOT NULL DEFAULT '', progress REAL NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '',
  config TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', log TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS collab_accounts (
+ username TEXT PRIMARY KEY, ig_id TEXT NOT NULL, expires_at REAL NOT NULL, connected_at REAL NOT NULL, error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS collab_accepts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, media_id TEXT NOT NULL, username TEXT NOT NULL,
+ due_at REAL NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, accepted_at REAL, error TEXT NOT NULL DEFAULT '',
+ UNIQUE(job_id,username)
+);
+CREATE TABLE IF NOT EXISTS story_posts (
+ job_id INTEGER PRIMARY KEY, clip_id TEXT NOT NULL, status TEXT NOT NULL, container_id TEXT, media_id TEXT,
+ attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS youtube_short_checks (clip_id TEXT PRIMARY KEY REFERENCES clips(id));
 '''
 
@@ -113,6 +125,8 @@ def init():
             assign_legacy_batches(db)
         if 'kind' not in {row['name'] for row in db.execute('PRAGMA table_info(intake_batches)')}:
             db.execute("ALTER TABLE intake_batches ADD COLUMN kind TEXT NOT NULL DEFAULT 'performance'")
+        if 'collaborators' not in job_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN collaborators TEXT NOT NULL DEFAULT ''")
         for column in ('held','forced'):
             if column not in job_columns:
                 db.execute(f'ALTER TABLE jobs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0')

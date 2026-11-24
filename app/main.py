@@ -373,6 +373,13 @@ def update_settings(body: SettingsPatch):
         if isinstance(value,str) and len(value)>4000:
             raise HTTPException(422,'Setting too long.')
         s[key] = value
+    try:
+        from . import collab
+        collab.validate(s)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc))
+    if s['story_share'] not in ('off','grid','all'):
+        raise HTTPException(422,'Choose which Reels are shared to Stories.')
     if s['gpu_mode'] not in ('auto','off'):
         raise HTTPException(422,'Choose GPU or CPU encoding.')
     if s['cover_mode'] not in media.COVER_MODES or s['export_quality'] not in media.EXPORT_QUALITIES:
@@ -963,20 +970,21 @@ def cover_preview(clip_id: str):
 
 @app.get('/media/{clip_id}')
 def public_media(clip_id: str, expires: int, signature: str):
-    if not re.fullmatch(r'[a-f0-9]{64}',clip_id) or not verify_media(clip_id,expires,signature):
+    if not re.fullmatch(r'[a-f0-9]{64}(-story)?',clip_id) or not verify_media(clip_id,expires,signature):
         raise HTTPException(403,'Media link has expired or is invalid.')
-    path = c.DATA/'media'/(clip_id+'.mp4')
+    path = c.DATA/('stories' if clip_id.endswith('-story') else 'media')/(clip_id+'.mp4')
     if not path.is_file():
         raise HTTPException(404)
     return FileResponse(path,media_type='video/mp4')
 
 @app.get('/auth/instagram/start')
-def instagram_start(request: Request):
+def instagram_start(request: Request, collab: int = 0):
     if c.DEMO or not c.META_ID or not c.META_SECRET:
         raise HTTPException(409,'Set Meta app credentials in compose.yaml, then recreate the container. See the setup guide.')
     state = secrets.token_urlsafe(32)
     request.session['ig_state'] = state
     request.session['ig_state_at'] = time.time()
+    request.session['ig_role'] = 'collab' if collab else 'main'
     scope = 'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights'
     return RedirectResponse('https://www.instagram.com/oauth/authorize?'+urlencode({'client_id':c.META_ID,'redirect_uri':c.PUBLIC_URL+'/auth/instagram/callback','response_type':'code','scope':scope,'state':state,'enable_fb_login':'false','force_reauth':'true'}))
 
@@ -988,11 +996,32 @@ def instagram_callback(request: Request, code: str='', state: str=''):
         raise HTTPException(403,'Login state expired. Start again from Settings.')
     if not code:
         raise HTTPException(400,'Instagram login was cancelled.')
+    role = request.session.pop('ig_role','main')
     try:
-        ig.connect_account(code)
+        if role == 'collab':
+            from . import collab
+            collab.connect_account(code)
+        else:
+            ig.connect_account(code)
     except ig.MetaError as exc:
         raise HTTPException(502,str(exc))
     return RedirectResponse('/#settings',303)
+
+@app.get('/api/collaborators')
+def collaborators():
+    from . import collab
+    return {'connected':[{k:v for k,v in row.items() if k!='ig_id'} for row in collab.connected().values()]}
+
+@app.post('/api/collaborators/{username}/sign-out')
+def collaborator_sign_out(username: str):
+    from . import collab
+    collab.sign_out(username.lower())
+    return {'ok':True}
+
+@app.get('/api/jobs/{job_id}/collaborators')
+def job_collaborators(job_id: int):
+    from . import collab, stories
+    return {'collaborators':collab.for_job(job_id),'story':stories.for_job(job_id)}
 
 @app.get('/auth/openrouter/start')
 def openrouter_start(request: Request):

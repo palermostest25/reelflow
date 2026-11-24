@@ -97,6 +97,20 @@ Reelflow fingerprints the audio of every prepared clip (a few per worker pass) a
 
 Use **Not posted yet**, **Already posted** and **Same song** in the Footage library to filter. Each clip's drawer lists its posting history with Instagram links and the clips it matches, with percentages.
 
+### Collaborators
+
+**Settings → Collaborators** invites your other Instagram accounts as collaborators on every grid Reel (Trials never get collaborators: they are meant for non-followers). Add usernames, put them in order, and choose:
+
+- **Invite per post** (1–3, Instagram's limit). With more accounts listed, each Reel invites the next ones in turn so every account gets posts.
+- **Accept automatically** per account. Sign the account in to Reelflow: log in to Instagram as that account in your browser, then press its **Sign in as @…** link. Signing a collaborator in never replaces your main account. While your Meta app is in development mode, add each account as an Instagram tester first.
+- **Accept order** (the order above, or random), **First accepts after** and **Then one more every**, in hours (24 and 24 by default: the first account accepts a day after the Reel goes up, the next a day after that).
+
+Accounts that aren't signed in, or have automatic accepting off, still get the invite and accept in the Instagram app. A published post's drawer shows each collaborator's status. If an invite hasn't reached an account yet, Reelflow checks hourly for a day; refusals show Meta's reason. Accepting uses the Instagram API's collaboration invites for the invited account. That part couldn't be checked against Meta's documentation when it was written, so watch the first few posts.
+
+### Stories
+
+**Settings → Reel covers & export → Share to Instagram Stories** posts each Reel's video as a Story after the Reel publishes: grid Reels by default, grid and Trial Reels, or off. Instagram's API can't add the Reel sticker you get in the app, so the Story is the video itself, cut to the first 59 seconds when longer (Stories are at most 60 seconds). Sharing Trials to Stories shows them to followers, which works against what a Trial is for. Story status shows in the post's drawer.
+
 ### Talking clips, extras and dates
 
 Not everything is DJ footage. Every set and clip has a type: **DJ / performance**, **Talking to camera**, **Behind the scenes** or **Promo / announcement**. Choose it when you upload, per set under **Footage library → Sets & mixing**, or per clip in its drawer; a clip follows its set unless you change it. Footage subfolders with names like `talking`, `BTS` or `promo` are typed automatically.
