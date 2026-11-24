@@ -1028,7 +1028,10 @@ def render(shots, cameras, bounce, duration, work, output, args, size=None, wind
         pool.shutdown(wait=True, cancel_futures=True)
     listing = folder / "concat.txt"
     # Safe generated relative filenames work even if the user's folder has quotes.
-    listing.write_text("".join(f"file '{p.name}'\n" for p in paths), encoding="utf-8")
+    # State each shot's exact length: FFmpeg 7.1 reads an MP4 shot as one frame short, so the
+    # concat demuxer would overlap every join by a frame and drop it.
+    listing.write_text("".join(f"file '{p.name}'\nduration {(shot.end-shot.start)/args.fps:.9f}\n"
+                               for p, shot in zip(paths, shots)), encoding="utf-8")
     assembled = folder / f"assembled.{extension}"
     print(f"{label}Concatenating and adding the audio bounce …", flush=True)
     audio_filter = f"atrim=start={start_s:.9f}:duration={length:.9f},asetpts=PTS-STARTPTS"

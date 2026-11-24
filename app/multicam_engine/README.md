@@ -1,7 +1,7 @@
 # Multicam engine (vendored)
 
 These modules are the editing engine from Multicam Studio
-(`palermostest25/multicam-studio`, commit `2505ceea9f1ba2a70a664bca9b5a6051e8abb1de`), copied with one change (the final verification error lists the durations it found):
+(`palermostest25/multicam-studio`, commit `2505ceea9f1ba2a70a664bca9b5a6051e8abb1de`), copied with two changes: the final verification error lists the durations it found, and the concat list states each shot's exact duration (FFmpeg 7.1, as in Debian, otherwise drops a frame at every join):
 `multicam_edit.py`, `planner.py`, `music.py`, `vision.py`, `looks.py` and `hardware.py`.
 
 Reelflow runs `multicam_edit.py` as a separate process (see `app/multicam.py`), so it keeps its own
