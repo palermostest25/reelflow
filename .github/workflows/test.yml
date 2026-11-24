@@ -22,14 +22,18 @@ jobs:
         with:
           node-version: '22'
       - name: Install FFmpeg
-        # The runner's package mirror sometimes stalls: time each try out and retry instead of hanging.
+        # GitHub's Azure package mirror sometimes stalls. Fail fast on a slow download, then switch to
+        # Ubuntu's main mirror and try again, rather than hanging for the job's whole time limit.
         run: |
+          APT="sudo apt-get -q -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 -o Acquire::Retries=3"
           for attempt in 1 2 3; do
-            if timeout 240 sudo apt-get update && timeout 360 sudo apt-get install -y --no-install-recommends ffmpeg; then
+            if timeout 180 $APT update && timeout 300 $APT install -y --no-install-recommends ffmpeg; then
+              ffmpeg -version | head -1
               exit 0
             fi
-            echo "FFmpeg install attempt $attempt stalled or failed; retrying"
-            sleep 10
+            echo "FFmpeg install attempt $attempt stalled or failed; switching to Ubuntu's main mirror"
+            sudo sed -i 's#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            sleep 5
           done
           exit 1
       - run: pip install -r requirements-dev.txt
